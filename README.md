@@ -17,4 +17,4 @@ Per-launch network profiles for coding agents. A network profile is a named, mac
 - Its callers are the process owners: `curator-run` for interactive launches, task-board for tracked children, tb-sessiond for board sessions. Each applies the patch on every process-creation path it owns.
 - The patch reaches argv and environment through the agents-management launch plane (`skill-agents-management`), the one place where launches are built (proposed Decision 0019).
 - Selected with `--network-profile <name>`; defaults come from the operator layer of agent selection and from runtime bindings.
-- Roadmap: milestone M7 in `skill-project-management/.specs/roadmap/ecosystem-roadmap.md`.
+- Roadmap: milestone M7 in `wiki/roadmap/ecosystem-roadmap.md`.
