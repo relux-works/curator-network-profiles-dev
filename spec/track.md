@@ -8,7 +8,7 @@ Several agents on one machine must reach the network through different applicati
 
 ## What we are building
 
-- A library `launch-network` (own public repository; consumed by task-board and the public `curator-run`): resolve → validate → probe → patch.
+- A library `curator-network` (own public repository; consumed by task-board and the public `curator-run`): resolve → validate → probe → patch.
 - `--network-profile <name>` on `curator run`, `task-board spawn`, `task-board claude|codex`; defaults from the operator layer (agent selection) and runtime bindings.
 - The patch is applied by the host that creates the process (`unset` then `set`), never through a shared environment; bindings are compared by digest; a resume under a changed profile is refused.
 
@@ -16,7 +16,7 @@ Several agents on one machine must reach the network through different applicati
 
 | Step | Delivers | Done when |
 | --- | --- | --- |
-| N-A | library, profile file `$XDG_CONFIG_HOME/launch-network/network.json`, `netrun --profile X -- <cmd>`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses |
+| N-A | library, profile file `$XDG_CONFIG_HOME/curator-network/network.json`, `netrun --profile X -- <cmd>`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses |
 | N-B | `curator run --network-profile` | the launcher applies the patch through the module |
 | N-C1 | explicit profile on every task-board and tb-sessiond process path, run manifests | a child and a board session use the profile, including retry and resume |
 | N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag |
@@ -28,4 +28,4 @@ N-C1 needs M2 and M3 (task-board and tb-sessiond build launches through the modu
 
 ## Repository
 
-This repository, `launch-network` (created 2026-09-24; private until the operator decides its visibility, proposed public). The draft specification is `spec/network-profiles.md`.
+This repository, `curator-network` (created 2026-09-24; private until the operator decides its visibility, proposed public). The draft specification is `spec/network-profiles.md`.

@@ -2,7 +2,7 @@
 
 Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from the proposal "самостоятельный эпик локальных сетевых профилей" and its enriched copy (the operator's Russian working notes (kept outside repositories)), aligned with `skill-project-management/.specs/drafts/launch-profiles.md` (referenced below as *LP*, decisions LP-D1…D16). Working names are marked *proposed*. Facts marked *docs-confidence* were not verified on installed binaries and become errata before goldens.
 
-> **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `launch-network`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (proposed Decision 0019).
+> **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `curator-network`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (proposed Decision 0019).
 
 ---
 
@@ -46,14 +46,14 @@ The launch keeps its environment, credentials, runtime binding, model and workin
 | Environment profile (Curator) | context, home, skills, MCP, account boundary | Curator |
 | Credential selection | which login the home uses (`shared`/`isolated`) | Curator |
 | Runtime binding (LP-D1) | which harness reaches which provider or engine | task-board config + module catalog |
-| **Network profile** | through which application proxy supported connections go | `launch-network` + the process owner |
+| **Network profile** | through which application proxy supported connections go | `curator-network` + the process owner |
 | Execution profile | where and under which limits tools run | execution environment |
 
 The network module never copies logins, changes provider homes, chooses an account or resets quota accounting; a different route is never a new quota domain. CLI vocabulary follows LP-D12: `--agent`/`--runtime <id>` for the binding, `--context-profile <name>` for the Curator profile in task-board (`--profile` in `curator-run`), **`--network-profile <name>`** for the network. The bare word `profile` is never reused.
 
 ### N2 One library, three process owners
 
-A Go module with the working name **`launch-network`** (*proposed*): `resolve → validate → probe → patch`. It imports neither task-board, nor `model-routing`, nor ax storage; those are its callers. It creates no processes and owns no daemon.
+A Go module with the working name **`curator-network`** (*proposed*): `resolve → validate → probe → patch`. It imports neither task-board, nor `curator-model-router`, nor ax storage; those are its callers. It creates no processes and owns no daemon.
 
 Every process owner applies the binding immediately before spawn on every process-creation path it owns: `curator-run` (interactive), task-board `internal/spawn` (children, retries, recursive worker launches, resume), tb-sessiond (primary sessions, including the codex app-server host and claude PTY host, at launch and at resume). `curator-engine` is a fourth process owner whose processes are engines, not harnesses: engine networking is out of this epic (N12).
 
@@ -61,7 +61,7 @@ Every process owner applies the binding immediately before spawn on every proces
 
 `NetworkSelection` (what the caller asked): `profile_ref`, `origin ∈ {explicit, runtime-default, project-default, operator-default}`, `required_assurance ∈ {cooperative, enforced}`.
 
-`NetworkProfile` (what the machine has), operator-owned file `$XDG_CONFIG_HOME/launch-network/network.json` (*proposed*, following the LP-D2 pattern of one machine-owned catalog per plane; the launcher and task-board never keep two copies):
+`NetworkProfile` (what the machine has), operator-owned file `$XDG_CONFIG_HOME/curator-network/network.json` (*proposed*, following the LP-D2 pattern of one machine-owned catalog per plane; the launcher and task-board never keep two copies):
 
 ```json
 {
@@ -139,7 +139,7 @@ Local `curator-engine` endpoints are loopback and MUST appear in every profile's
 
 ### N13 Routing
 
-`model-routing` decides what to launch; `launch-network` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router: the caller's CandidateResolver resolves every candidate's dependent settings (network profile, context profile, home) by the N4 precedence before scoring, fixes an explicitly requested profile across all candidates, and excludes a candidate whose resolved value differs from a fixed one unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
+`curator-model-router` decides what to launch; `curator-network` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router: the caller's CandidateResolver resolves every candidate's dependent settings (network profile, context profile, home) by the N4 precedence before scoring, fixes an explicitly requested profile across all candidates, and excludes a candidate whose resolved value differs from a fixed one unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
 
 ### N14 Future: managed gateway
 
@@ -199,6 +199,6 @@ A short appendix with test vectors, written with the code, fixes what this docum
 
 ## 6. Closed decisions and remaining choices
 
-Closed by this document: flag name `--network-profile`; file location pattern (`$XDG_CONFIG_HOME/launch-network/network.json`); HTTP CONNECT as the common surface; fresh process per launch in the MVP; Curator preparation not proxied by default; loopback engines in bypass. Added 2026-09-22 after the independent review: `spawn.network.default` accepted with the N4 precedence and `origin = project-default`; `EnvPatch` is `unset` then `set`, executed by the host that creates the process; binding equality is digest + adapter identity + assurance; a resume whose profile content changed is refused as `network_profile_drift`; dependent defaults are resolved by the caller before routing, never switched by the router; slice C is split into C1 (explicit profile) and C2 (defaults). After the second review: N7 distinguishes a new assignment on a running host from a reattach or resume of an existing run, and a helper process's own transport is configured explicitly (N11).
+Closed by this document: flag name `--network-profile`; file location pattern (`$XDG_CONFIG_HOME/curator-network/network.json`); HTTP CONNECT as the common surface; fresh process per launch in the MVP; Curator preparation not proxied by default; loopback engines in bypass. Added 2026-09-22 after the independent review: `spawn.network.default` accepted with the N4 precedence and `origin = project-default`; `EnvPatch` is `unset` then `set`, executed by the host that creates the process; binding equality is digest + adapter identity + assurance; a resume whose profile content changed is refused as `network_profile_drift`; dependent defaults are resolved by the caller before routing, never switched by the router; slice C is split into C1 (explicit profile) and C2 (defaults). After the second review: N7 distinguishes a new assignment on a running host from a reattach or resume of an existing run, and a helper process's own transport is configured explicitly (N11).
 
-Remaining for the implementing session (record why when choosing): final module name (`launch-network`) and the first managed backend (sing-box is the candidate).
+Remaining for the implementing session (record why when choosing): final module name (`curator-network`) and the first managed backend (sing-box is the candidate).
