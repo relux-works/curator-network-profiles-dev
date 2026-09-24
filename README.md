@@ -1,4 +1,4 @@
-# curator-network
+# curator-network-profiles
 
 Per-launch network profiles for coding agents. A network profile is a named, machine-local description of the application-level proxy through which a harness's supported network clients connect. The process owner that starts the harness resolves the profile, validates and probes it, and applies an environment patch immediately before spawn. Several agents on one machine can then use different egresses at the same time, without changing the orchestrator, sibling agents or the operating system. The first release is cooperative proxy routing of supported clients, not an enforced sandbox.
 
