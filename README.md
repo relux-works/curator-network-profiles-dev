@@ -10,6 +10,7 @@ Per-launch network profiles for coding agents. A network profile is a named, mac
 | --- | --- |
 | `spec/network-profiles.md` | draft specification (decisions N1–N14) |
 | `spec/track.md` | delivery track (steps N-A to N-D) |
+| `spec/network-profiles.ru.md`, `spec/track.ru.md` | Russian translations (the English files are canonical) |
 
 ## How it fits
 

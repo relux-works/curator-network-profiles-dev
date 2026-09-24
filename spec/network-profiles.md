@@ -1,6 +1,6 @@
 # Local agent network profiles: specification
 
-Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from the proposal "самостоятельный эпик локальных сетевых профилей" and its enriched copy (the operator's Russian working notes (kept outside repositories)), aligned with `skill-project-management/.specs/drafts/launch-profiles.md` (referenced below as *LP*, decisions LP-D1…D16). Working names are marked *proposed*. Facts marked *docs-confidence* were not verified on installed binaries and become errata before goldens.
+Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from the proposal "самостоятельный эпик локальных сетевых профилей" and its enriched copy, which the operator keeps as Russian working notes outside the repositories, aligned with `skill-project-management/.specs/drafts/launch-profiles.md` (referenced below as *LP*, decisions LP-D1…D16). Working names are marked *proposed*. Facts marked *docs-confidence* were not verified on installed binaries and become errata before goldens.
 
 > **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `curator-network`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (proposed Decision 0019).
 
@@ -8,7 +8,7 @@ Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from 
 
 ## 0. Goal
 
-Several native harnesses run on one machine at the same time and each launch must reach the network through its own application-level proxy without changing the orchestrator, sibling agents or the operating system:
+Several native harnesses run on one machine at the same time. Each launch must reach the network through its own application-level proxy, without changing the orchestrator, sibling agents or the operating system:
 
 ```text
 codex A  ─► proxy :18081 ─► VPN / upstream A
@@ -17,7 +17,7 @@ pi C     ─► proxy :18081 ─► VPN / upstream A
 orchestrator and everything else ─► the machine's ordinary network
 ```
 
-The launch keeps its environment, credentials, runtime binding, model and working directory; the network profile changes only how supported connections are made. The first release is **cooperative proxy routing of supported clients**, not enforced isolation of a process tree, and is named *network profiles*, never *network sandbox*. A later enforced sandbox reuses the same profile as its egress description.
+The launch keeps its environment, credentials, runtime binding, model and working directory; the network profile changes only how supported connections are made. The first release is **cooperative proxy routing of supported clients**, not enforced isolation of a process tree, so it is called *network profiles*, never *network sandbox*. A later enforced sandbox reuses the same profile as its egress description.
 
 ---
 
@@ -33,7 +33,7 @@ The launch keeps its environment, credentials, runtime binding, model and workin
 | OpenCode documents proxy env and the need to bypass the proxy for its local TUI server | opencode docs (docs-confidence) |
 | Codex websocket dialer handles standard proxy env and proxy routes | codex source read (docs-confidence for the installed build) |
 | `curl` reads lowercase `http_proxy` only; `NO_PROXY=*` disables proxying; clients disagree on case and precedence | curl docs |
-| Local engines under `curator-engine` listen on loopback; SSH-mode engine profiles connect to remote boxes by their own channel | LP-D7, LP-D8; agents-infra `model-harness` `mode = local|ssh` |
+| Local engines under `curator-engine` listen on loopback; SSH-mode engine profiles connect to remote boxes by their own channel | LP-D7, LP-D8; agents-infra `model-harness` `mode = local\|ssh` |
 
 ---
 
@@ -123,7 +123,7 @@ A session-level "change network profile" operation is not in the MVP; it arrives
 
 ### N9 Tracked sessions (ax)
 
-The tracked transport serializes owned literals only, so a proxy set on the outermost process is not enough for a durable resume. The network reference and digest travel in a versioned contract; the actual process host resolves the binding immediately before spawn or resume and rebuilds the child environment from it: the `unset` half of the patch runs against the host's own inherited environment, so a conflicting variable present only on the host is removed there, and the literals carried by the transport are the `set` half only. Until that exists, tracked mode with a mandatory network profile refuses; direct mode ships independently.
+The tracked transport serializes owned literals only, so a proxy set on the outermost process is not enough for a durable resume. The network reference and digest travel in a versioned contract. The actual process host resolves the binding immediately before spawn or resume and rebuilds the child environment from it. The `unset` half of the patch runs against the host's own inherited environment, so a conflicting variable present only on the host is removed there; the literals carried by the transport are the `set` half only. Until that exists, tracked mode with a mandatory network profile refuses; direct mode ships independently.
 
 ### N10 Lifecycle, checks, errors
 
@@ -131,7 +131,7 @@ The tracked transport serializes owned literals only, so a proxy set on the oute
 
 ### N11 Coverage boundary and secrets
 
-The profile applies to the harness's supported network clients, which may include auth refresh, HTTP MCP and other requests, not only inference. Child commands may inherit the variables but their compliance is client behaviour, not an OS guarantee. A helper process the harness starts (a stdio MCP server, a tool bridge) inherits the patch like any child; when such a process must reach a control plane by its own route, its outgoing client is configured explicitly, never from the inherited proxy variables, so the harness's egress and the bridge's transport are verified together and a failing inference proxy never takes the control channel down with it. Outside the guarantee: a separately opened OAuth browser, already running services, raw sockets and UDP, tools executing on a remote EnvironmentHost. Upstream proxy passwords and WireGuard keys live in the gateway; the agent receives a loopback endpoint. A loopback listener without client authentication is not isolation between local processes. Logs record run/attempt, profile id, digest, adapter/build, probe result; never raw env, tokens, `Authorization`, `Proxy-Authorization` or request bodies.
+The profile applies to the harness's supported network clients, which may include auth refresh, HTTP MCP and other requests, not only inference. Child commands may inherit the variables but their compliance is client behaviour, not an OS guarantee. A helper process the harness starts (a stdio MCP server, a tool bridge) inherits the patch like any child. When such a process must reach a control plane by its own route, its outgoing client is configured explicitly, never from the inherited proxy variables. That way the harness's egress and the bridge's transport are verified together, and a failing inference proxy never takes the control channel down with it. Outside the guarantee: a separately opened OAuth browser, already running services, raw sockets and UDP, tools executing on a remote EnvironmentHost. Upstream proxy passwords and WireGuard keys live in the gateway; the agent receives a loopback endpoint. A loopback listener without client authentication is not isolation between local processes. Logs record run/attempt, profile id, digest, adapter/build, probe result; never raw env, tokens, `Authorization`, `Proxy-Authorization` or request bodies.
 
 ### N12 Engines
 
@@ -139,7 +139,7 @@ Local `curator-engine` endpoints are loopback and MUST appear in every profile's
 
 ### N13 Routing
 
-`curator-model-router` decides what to launch; `curator-network` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router: the caller's CandidateResolver resolves every candidate's dependent settings (network profile, context profile, home) by the N4 precedence before scoring, fixes an explicitly requested profile across all candidates, and excludes a candidate whose resolved value differs from a fixed one unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
+`curator-model-router` decides what to launch; `curator-network` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router. Before scoring, the caller's CandidateResolver resolves every candidate's dependent settings (network profile, context profile, home) by the N4 precedence. It fixes an explicitly requested profile across all candidates and excludes a candidate whose resolved value differs from a fixed one, unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
 
 ### N14 Future: managed gateway
 

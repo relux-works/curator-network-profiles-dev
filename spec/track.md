@@ -4,7 +4,7 @@ Status: **DRAFT**, 2026-09-23. Specification: `spec/network-profiles.md` (draft,
 
 ## Why
 
-Several agents on one machine must reach the network through different application-level egresses (VPN A, VPN B, a corporate proxy) without changing the orchestrator, siblings or the operating system.
+Several agents on one machine must reach the network through different application-level egresses (VPN A, VPN B, a corporate proxy). None of this may change the orchestrator, sibling agents or the operating system.
 
 ## What we are building
 
