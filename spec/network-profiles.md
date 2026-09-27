@@ -4,6 +4,16 @@ Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from 
 
 > **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `curator-network-profiles`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (proposed Decision 0019).
 
+> **Notes 2026-09-27 (the command-line shape).** The operator adopted one command-line shape for the ecosystem (`wiki/research/cli-shaping-review.md`). For this module:
+> - the flag is `--network <name>` everywhere (was `--network-profile`);
+> - the operator file is `~/.curator/network.toml` (was `$XDG_CONFIG_HOME/curator-network-profiles/network.json`; moved by curator-playbook `spec/process-configuration.md` §2.3);
+> - the proposed `netrun` wrapper becomes the Curator provider `curator-network`: `curator network list|show|add|remove|check [--probe]|confirm|exec <name> -- <command>`;
+> - adding a network profile is a widening entry, confirmed with `curator network confirm`;
+> - a runtime binding's key is `network` (was `network_profile`);
+> - the prose keeps "network profile", and the bare word `profile` names only the Curator profile.
+>
+> §7 is the change log.
+
 ---
 
 ## 0. Goal
@@ -49,7 +59,7 @@ The launch keeps its environment, credentials, runtime binding, model and workin
 | **Network profile** | through which application proxy supported connections go | `curator-network-profiles` + the process owner |
 | Execution profile | where and under which limits tools run | execution environment |
 
-The network module never copies logins, changes provider homes, chooses an account or resets quota accounting; a different route is never a new quota domain. CLI vocabulary follows LP-D12: `--agent`/`--runtime <id>` for the binding, `--context-profile <name>` for the Curator profile in task-board (`--profile` in `curator-run`), **`--network-profile <name>`** for the network. The bare word `profile` is never reused.
+The network module never copies logins, changes provider homes, chooses an account or resets quota accounting; a different route is never a new quota domain. CLI vocabulary follows the command-line shape of 2026-09-27, which replaces LP-D12's: `--runtime <id>` (alias `--agent`) for the binding, `--profile <name>` for the Curator profile in task-board and `curator run` alike, and **`--network <name>`** for the network profile. The bare word `profile` means only the Curator profile; a network profile is never selected with `--profile`.
 
 ### N2 One library, three process owners
 
@@ -61,27 +71,33 @@ Every process owner applies the binding immediately before spawn on every proces
 
 `NetworkSelection` (what the caller asked): `profile_ref`, `origin ∈ {explicit, runtime-default, project-default, operator-default}`, `required_assurance ∈ {cooperative, enforced}`.
 
-`NetworkProfile` (what the machine has), operator-owned file `$XDG_CONFIG_HOME/curator-network-profiles/network.json` (*proposed*, following the LP-D2 pattern of one machine-owned catalog per plane; the launcher and task-board never keep two copies):
+`NetworkProfile` (what the machine has), operator-owned file `~/.curator/network.toml`, one machine-owned catalog per plane, kept with the operator's other files under `~/.curator/`; the launcher and task-board never keep two copies. It was proposed as `$XDG_CONFIG_HOME/curator-network-profiles/network.json`; curator-playbook `spec/process-configuration.md` §2.3 moved it, in TOML because people edit it by hand. The table name `networks` is *proposed*: the word `profile` names only the Curator profile.
 
-```json
-{
-  "schema": "relux-network-profiles-v1",
-  "profiles": {
-    "egress-a": { "kind": "external-http-proxy", "endpoint": "http://127.0.0.1:18081", "bypass_hosts": ["localhost", "127.0.0.1", "::1"] },
-    "egress-b": { "kind": "external-http-proxy", "endpoint": "http://127.0.0.1:18082", "bypass_hosts": ["localhost", "127.0.0.1", "::1"] }
-  }
-}
+```toml
+schema = "relux-network-profiles-v1"
+
+[networks.egress-a]
+kind         = "external-http-proxy"
+endpoint     = "http://127.0.0.1:18081"
+bypass_hosts = ["localhost", "127.0.0.1", "::1"]
+
+[networks.egress-b]
+kind         = "external-http-proxy"
+endpoint     = "http://127.0.0.1:18082"
+bypass_hosts = ["localhost", "127.0.0.1", "::1"]
 ```
+
+The file is edited through `curator network add|remove` or by hand. Adding a network profile is a widening entry, because it reroutes traffic: it takes effect only after `curator network confirm`, which refuses to run in an agent session (relux-works/curator-trust `spec/trust.md` §10).
 
 `NetworkBinding` (what is applied): `profile_ref`, `profile_digest`, `adapter_identity` (harness build + entrypoint + plugin), `resolved_endpoint`, `assurance`, `env_patch`; later `lease_id`, `generation` for a managed gateway. Run manifests keep `profile_ref`, `profile_digest`, `adapter_identity`, `assurance` and the probe result; never the full environment or an endpoint carrying credentials. A digest binds the configuration, not the external proxy's actual egress.
 
 `env_patch` is two ordered operations, `unset` then `set`: `unset` removes every proxy-family variable the adapter knows, in both spellings, from the environment of the host that creates the process, and `set` writes the coherent set of N5; a patch is never only additions. `profile_digest` is computed over the normalized effective profile (schema version, kind, endpoint, sorted `bypass_hosts`, credential *mode* without any secret), never over probe results, lease ids or timestamps. Two bindings are **equal** when `profile_digest`, `adapter_identity` and `assurance` are equal; an equal profile name proves nothing.
 
-A `runtimes.toml` entry (LP-D2) MAY carry `network_profile = "<name>"` as the default for that binding, and project configuration MAY carry `spawn.network.default = "<name>"` (decided 2026-09-22 after review): both are stable profile ids resolved on each machine and refused as `network_profile_unknown` where the machine has no such profile. An explicit `--network-profile` overrides both.
+A `runtimes.toml` entry (LP-D2) MAY carry `network = "<name>"` as the default for that binding, and project configuration MAY carry `spawn.network.default = "<name>"` (decided 2026-09-22 after review): both are stable profile ids resolved on each machine and refused as `network_profile_unknown` where the machine has no such profile. An explicit `--network` overrides both.
 
 ### N4 Precedence and assurance
 
-Host locks and the allowed profile set → explicit selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.json`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
+Host locks and the allowed profile set → explicit selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.toml`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
 
 ### N5 Applying the patch without side effects
 
@@ -97,7 +113,7 @@ NO_PROXY=<bypass list>  no_proxy=<bypass list>
 
 ### N6 Gateway shape
 
-Common surface: **HTTP proxy with CONNECT**, because Claude Code supports HTTP/HTTPS proxy env and not SOCKS. Behind it: an upstream HTTP proxy, a SOCKS upstream, or a WireGuard endpoint. First managed backend candidate: sing-box with a `mixed` loopback listener, `set_system_proxy: false`, no TUN, WireGuard without a system interface, pinned to a supported version. In slice A the gateway is operator-configured; the library only reads the profile and probes the endpoint, and the process owner or the `netrun` wrapper launches. This is a network tunnel, not an LLM gateway: model API, prompts, model ids and credentials are untouched; TLS verification stays on; corporate TLS inspection is a separate explicit mode.
+Common surface: **HTTP proxy with CONNECT**, because Claude Code supports HTTP/HTTPS proxy env and not SOCKS. Behind it: an upstream HTTP proxy, a SOCKS upstream, or a WireGuard endpoint. First managed backend candidate: sing-box with a `mixed` loopback listener, `set_system_proxy: false`, no TUN, WireGuard without a system interface, pinned to a supported version. In slice A the gateway is operator-configured; the library only reads the profile and probes the endpoint, and the process owner or `curator network exec` launches. This is a network tunnel, not an LLM gateway: model API, prompts, model ids and credentials are untouched; TLS verification stays on; corporate TLS inspection is a separate explicit mode.
 
 ### N7 Harness support is per launch shape
 
@@ -117,8 +133,8 @@ A session-level "change network profile" operation is not in the MVP; it arrives
 
 ### N8 Integration surfaces
 
-- `curator run <env> --profile <p> --network-profile egress-a -- <args>`: resolve, validate compatibility, bounded preflight, patch after the ordinary environment composition; admission and late checks unchanged.
-- `task-board spawn … --network-profile egress-a` and `spawn.network.default` / per-binding `network_profile`: the orchestrator selects a profile id from the allowed set, never a raw proxy URL. Inheritance by a child is **by reference plus re-resolution**, never by copying the orchestrator's environment; a parent on A may spawn a child on B.
+- `curator run <runtime> --profile <p> --network egress-a -- <args>`: resolve, validate compatibility, bounded preflight, patch after the ordinary environment composition; admission and late checks unchanged.
+- `task-board spawn … --network egress-a` and `spawn.network.default` / per-binding `network`: the orchestrator selects a profile id from the allowed set, never a raw proxy URL. Inheritance by a child is **by reference plus re-resolution**, never by copying the orchestrator's environment; a parent on A may spawn a child on B.
 - Manifests: beside `RuntimeProvenance` and the Curator `profile.name`/`lock_sha256` (LP-D11), `network.profile_ref`, `profile_digest`, `adapter_identity`, `assurance`.
 
 ### N9 Tracked sessions (ax)
@@ -127,7 +143,7 @@ The tracked transport serializes owned literals only, so a proxy set on the oute
 
 ### N10 Lifecycle, checks, errors
 
-`resolve → validate profile + adapter → bounded proxy preflight → prepare binding → spawn → record outcome`. No scheduler, no daemon registration, no lease model in slice A. `plan`/`show` are read-only; `doctor` is an explicit network call; the launch preflight is deadline-bounded and uses no model credentials. Three distinct facts: an open TCP port; a successful CONNECT and TLS to the agreed target; an observed external IP for that test only. Failure codes: `network_profile_unknown`, `network_profile_denied`, `network_scope_unsupported`, `network_configuration_conflict`, `network_proxy_unreachable`, `network_proxy_auth_failed`, `network_profile_drift`. A missing, denied, unsupported or unreachable profile means the agent does not start; there is no hidden direct fallback and no automatic VPN or account switch; refusing to start is not an OS kill switch. A mid-run drop is reported to the run owner, who decides; nothing restarts the task unconditionally.
+`resolve → validate profile + adapter → bounded proxy preflight → prepare binding → spawn → record outcome`. No scheduler, no daemon registration, no lease model in slice A. `curator network show` and a plan are read-only; `curator network check` validates without a network call, and `check --probe` is the explicit network call (the proposed `netrun doctor`); the launch preflight is deadline-bounded and uses no model credentials. Three distinct facts: an open TCP port; a successful CONNECT and TLS to the agreed target; an observed external IP for that test only. Failure codes: `network_profile_unknown`, `network_profile_denied`, `network_scope_unsupported`, `network_configuration_conflict`, `network_proxy_unreachable`, `network_proxy_auth_failed`, `network_profile_drift`. A missing, denied, unsupported or unreachable profile means the agent does not start; there is no hidden direct fallback and no automatic VPN or account switch; refusing to start is not an OS kill switch. A mid-run drop is reported to the run owner, who decides; nothing restarts the task unconditionally.
 
 ### N11 Coverage boundary and secrets
 
@@ -139,7 +155,7 @@ Local `curator-inference-manager` endpoints are loopback and MUST appear in ever
 
 ### N13 Routing
 
-`curator-model-router` decides what to launch; `curator-network-profiles` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router. Before scoring, the caller's CandidateResolver resolves every candidate's dependent settings (network profile, context profile, home) by the N4 precedence. It fixes an explicitly requested profile across all candidates and excludes a candidate whose resolved value differs from a fixed one, unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
+`curator-model-router` decides what to launch; `curator-network-profiles` decides which allowed route it connects through. The router may treat compatibility with a mandatory network profile as a constraint and never switches VPNs, credentials or quota domains. A runtime binding whose catalog default names another profile is not a route switch performed by the router. Before scoring, the caller's CandidateResolver resolves every candidate's dependent settings (network profile, Curator profile, home) by the N4 precedence. It fixes an explicitly requested profile across all candidates and excludes a candidate whose resolved value differs from a fixed one, unless the routing policy's free-field mask frees that member (routing spec R7). That resolution is a lookup, never a proxy probe; the N10 preflight stays a separate launch step. A network failure is not evidence about model quality and never lowers a coding score. The assessor backend has explicitly assigned credentials, egress and data policy of its own.
 
 ### N14 Future: managed gateway
 
@@ -151,9 +167,9 @@ Adds `acquire / inspect / release`; the lease belongs to the owner of the actual
 
 | Slice | Delivers | Value |
 | --- | --- | --- |
-| A. Common mechanism | profile schema and file, resolver, `EnvPatch`, external HTTP proxy backend, thin wrapper `netrun --profile X -- <cmd>` and `netrun doctor X` (*proposed*) | independent manual launches without global `export` |
-| B. Launcher | `curator run --network-profile`, verified entrypoints, manifests | environment + network in one launch |
-| C1. Orchestration, explicit profile | task-board `internal/spawn` and tb-sessiond on every real process-creation path (spawn, retry, resume, recursive children) with an explicit `--network-profile`, run metadata | the orchestrator runs local sub-agents through different egresses |
+| A. Common mechanism | profile schema and file, resolver, `EnvPatch`, external HTTP proxy backend, and the Curator provider `curator-network`: `curator network exec <name> -- <cmd>`, `check [--probe]`, `list`, `show`, `add`, `remove`, `confirm` (replacing the proposed `netrun --profile X -- <cmd>` and `netrun doctor X`) | independent manual launches without global `export` |
+| B. Launcher | `curator run --network`, verified entrypoints, manifests | environment + network in one launch |
+| C1. Orchestration, explicit profile | task-board `internal/spawn` and tb-sessiond on every real process-creation path (spawn, retry, resume, recursive children) with an explicit `--network`, run metadata | the orchestrator runs local sub-agents through different egresses |
 | C2. Orchestration, defaults | per-binding defaults from `runtimes.toml`, the project default, their `origin` provenance | defaults without a flag on every spawn |
 | D. Managed gateway | optional sing-box backend, runtime-owned leases, generations | automatic proxy/WireGuard provisioning |
 | Separate epic | enforced execution sandbox | bypass prevention and isolation |
@@ -201,4 +217,19 @@ A short appendix with test vectors, written with the code, fixes what this docum
 
 Closed by this document: flag name `--network-profile`; file location pattern (`$XDG_CONFIG_HOME/curator-network-profiles/network.json`); HTTP CONNECT as the common surface; fresh process per launch in the MVP; Curator preparation not proxied by default; loopback engines in bypass. Added 2026-09-22 after the independent review: `spawn.network.default` accepted with the N4 precedence and `origin = project-default`; `EnvPatch` is `unset` then `set`, executed by the host that creates the process; binding equality is digest + adapter identity + assurance; a resume whose profile content changed is refused as `network_profile_drift`; dependent defaults are resolved by the caller before routing, never switched by the router; slice C is split into C1 (explicit profile) and C2 (defaults). After the second review: N7 distinguishes a new assignment on a running host from a reattach or resume of an existing run, and a helper process's own transport is configured explicitly (N11).
 
+*Superseded on 2026-09-27 by the adopted command-line shape:* the flag is `--network`, the file is `~/.curator/network.toml`, and the proposed `netrun` is `curator network exec|check` (§7).
+
 Remaining for the implementing session (record why when choosing): the first managed backend (sing-box is the candidate).
+
+## 7. Change log
+
+**2026-09-27.** Applied the command-line shape the operator adopted on 2026-09-27 (`wiki/research/cli-shaping-review.md`):
+
+| Before | After | Where |
+| --- | --- | --- |
+| `--network-profile <name>` | `--network <name>` | N1, N3, N8, §3 |
+| `--context-profile <name>` for the Curator profile in task-board | `--profile <name>`, in task-board and `curator run` alike; `--runtime <id>` with the alias `--agent` | N1 |
+| `$XDG_CONFIG_HOME/curator-network-profiles/network.json`, object `profiles` | `~/.curator/network.toml`, tables `[networks.<name>]` (the table name proposed) | N3, N4, §6 |
+| per-binding `network_profile` | per-binding `network` | N3, N8 |
+| `netrun --profile X -- <cmd>`, `netrun doctor X` | the provider `curator-network`: `curator network exec <name> -- <cmd>`, `curator network check [--probe] <name>`, with `list`, `show`, `add`, `remove` and `confirm` | N6, N10, §3 |
+| adding a profile took effect at once | adding a network profile is a widening entry confirmed with `curator network confirm` | N3 |
