@@ -1,6 +1,6 @@
 # Integration contract (proposal): how the process owners apply a network profile
 
-Status: **PROPOSAL for advice** (rule 27), 2026-09-30. Author: ivan-network-profiles. Decider: Ivan (accountable), through ivan-tb-keeper and ivan-desk. The owners named below advise; they do not decide, and they keep the final say over changes inside their own repositories when the integration lands there (N-B, N-C1, N-C2). Nothing in this document edits another repository.
+Status: **DRAFT, under advice until 2026-10-01T16:00Z; Ivan decides.** Rule-27 proposal, 2026-09-30. Revised after the advice; nothing here binds a consumer before Ivan's decision. Author: ivan-network-profiles. Decider: Ivan (accountable), through ivan-tb-keeper and ivan-desk. The owners named below advise; they do not decide, and they keep the final say over changes inside their own repositories when the integration lands there (N-B, N-C1, N-C2). Nothing in this document edits another repository.
 
 Normative inputs: `spec/network-profiles.md` (N1–N14) and `spec/contract-appendix.md` (digest, EnvPatch, equality; written with N-A). Where this document and the appendix disagree on a byte, the appendix wins.
 
