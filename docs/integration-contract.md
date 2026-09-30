@@ -25,11 +25,19 @@ Selection ──► resolve ──► validate ──► preflight (bounded) ─
 | record | binding + probe | a `Record` for the run manifest (never env, never credentials) | none |
 | reattach / resume | the recorded `Record`, a fresh binding, the event kind | ok / attach | `network_profile_drift`, `network_scope_unsupported`, `network_profile_unknown`, `network_profile_denied` |
 
-\* marked TODO(decision) in the N-A PR: codes the spec does not name.
+\* codes the spec does not name, marked TODO(decision) in the planned N-A PR.
 
 `unmanaged` (no selection anywhere) returns an empty patch: today's behaviour, byte for byte (§3 acceptance, "compatibility with existing runs").
 
 **The one rule that decides every insertion point below:** the patch is applied to the **final** child environment, after the harness plugin's own filtering and after every overlay; the `set` half then travels as **owned literals** (`env_literals`), never as `env_names` (N5, 0013 D6.3). Applying it earlier breaks two plugins in opposite ways: muse's closed allowlist would drop the `set` values, and the pass-through plugins (pi, gemini, agy) would keep an ambient proxy the `unset` never saw.
+
+"Last" means after **every** overlay the owner applies, including the ones that run after the launch plane's `BuildPlan`: task-board's `RuntimeControlEnvironment` (launch_plan.go:479), a vendor's env merge (vendors/local-models/spawn.go:54), and curator-run's `frag.Env`, prompt and MCP overlays (composition.go:87-103). Two rules keep that true when the patch moves into the module (2.1):
+- every later overlay **refuses** a proxy-family name (`network_configuration_conflict`) instead of writing it, so a Curator profile fragment cannot put `HTTPS_PROXY` back after the `unset`;
+- `Apply` is idempotent, so an owner that cannot prove its overlays clean re-applies the same patch after its last overlay. The patch is never applied from two different bindings.
+
+**The `set` half is never a secret.** It becomes `env_literals`, which ax records and replays (0013:298-307) and which 0013 refuses when secret (`secret_policy_violation`). N-A therefore refuses an endpoint with userinfo before bind (`network_profile_invalid`; credential mode `none` only); a future credential mode keeps the secret in the gateway and hands the agent a loopback endpoint (N6, N11). The contract appendix carries a vector for it.
+
+**A plan or dry run is read-only (N10).** It runs resolve, validate, bind and patch, **skips the preflight**, and records the probe as `skipped`. Only a real launch probes.
 
 ### The record (what manifests keep)
 
@@ -42,7 +50,7 @@ Selection ──► resolve ──► validate ──► preflight (bounded) ─
     "profile_digest": "sha256:…",
     "adapter_identity": {"adapter": "generic-env-v1", "harness": "codex", "build": "0.x.y", "entrypoint": "exec"},
     "assurance": "cooperative",
-    "probe": {"tcp": true, "connect": "ok|skipped|failed", "tls": "ok|skipped|failed", "checked_at": "RFC3339"}
+    "probe": {"tcp": "ok|skipped|failed", "connect": "ok|skipped|failed", "tls": "ok|skipped|failed", "checked_at": "RFC3339"}
   }
 }
 ```
@@ -60,6 +68,9 @@ Two bindings are equal when `profile_digest`, `adapter_identity` and `assurance`
 | resume/reattach, profile gone / not allowed | `network_profile_unknown` / `network_profile_denied` |
 | new assignment on a running host, binding equal | attach |
 | new assignment on a running host, binding differs, no per-session route | refuse `network_scope_unsupported` |
+| new assignment on a running host, binding differs, the adapter can set the route per session | set per session and record (N7); **deferred** in the first release, see Q4 |
+
+Every comparison above is the full equality (digest + adapter identity + assurance), except the drift row, which by definition is the same `profile_ref` with a different digest.
 
 ---
 
@@ -72,7 +83,7 @@ Two bindings are equal when `profile_digest`, `adapter_identity` and `assurance`
 - Proposal (under the proposed Decision 0019, "the patch reaches argv and env through the agents-management module"):
   1. `LaunchRequest` (and `vendorplugin.SpawnRequest`) gain an optional `Network *binding.Binding` (or just its `EnvPatch` plus `Record`).
   2. `BuildPlan` applies `patch.Apply` **right after** `ChildEnv` (plan.go:449-452), and adds the `set` half to `OwnedEnv` (:469-476), so the proxy values become tracked `env_literals`.
-  3. Each system plugin declares its **adapter**: the generic adapter for claude, codex, qwen, pi, pinative, gemini, agy; a plugin whose env contract cannot carry the patch returns `network_scope_unsupported` until verified. **muse** (a closed 21-name allowlist that drops every proxy name, `muse/env_test.go:205`) is `network_scope_unsupported` in the first release.
+  3. Each system plugin declares its **adapter**: the generic adapter for claude, codex, qwen, pi, pinative, gemini, agy; a plugin whose harness has not been verified behind a proxy returns `network_scope_unsupported`. **muse** is `network_scope_unsupported` in the first release. The reason is not its closed 21-name allowlist (muse/env.go:16-38; `muse/env_test.go:205` asserts `HTTPS_PROXY` is not allowed): a post-`ChildEnv` patch is not filtered by that allowlist. The reason is that its network behaviour behind a proxy has not been verified. Widening the allowlist itself would be the pre-filter approach §1 rejects, and it would let ambient proxies through.
   4. Verified per-harness additions (`ALL_PROXY`, websocket variables, native settings overrides) live in the plugin's adapter, never in the generic one (N5).
   5. `Plan.Provenance` carries the `Record`.
 - The module keeps owning no exec; the owners below still create the process.
@@ -84,19 +95,19 @@ Two bindings are equal when `profile_digest`, `adapter_identity` and `assurance`
 - **Insertion point.** `launch_plan.go:488`: after `RuntimeControlEnvironment`, before `return plan`. It is the single choke point for the real launch (`planCommand`, spawn.go:1063-1071) and the dry run (`BuildArgs`, spawn.go:1414). Once 2.1 lands, the call moves into `BuildPlan` and this site only passes the binding.
 - **Selection.** `task-board spawn … --network <name>` sets `spawn.Config.Network = {ref, origin: explicit}`; N-C2 adds `runtimes.toml` `network = "<name>"` (runtime-default) and `spawn.network.default` (project-default). The orchestrator passes a profile **id**, never a URL (§4).
 - **Manifest.** `spawnRunManifest` (runtime.go:325-440) gains a `network` Record beside `runtime_provenance` (:337). Copy it in `newSpawnRunManifest`, `spawnConfigFromManifest` (:3205-3259) and `cloneSpawnRunSuccessor` (directives.go:895-968). Do not reuse `NetworkAccess bool` (:403): it is the codex sandbox flag.
-- **Retry** (`retryLaunchConfig`, limit_retry.go:408): a retry may switch the agent, which changes `adapter_identity`, so it re-resolves and records a new binding; the same ref with a different digest is `network_profile_drift` (a retry is a new attempt of the same run, not a new launch; question Q3).
+- **Retry** (`retryLaunchConfig`, limit_retry.go:408): a retry may switch the agent, which changes `adapter_identity`, so it re-resolves and records a new binding; that is expected and not drift. Drift is a digest comparison only: the same ref with a different digest is `network_profile_drift` (a retry is a new attempt of the same run, not a new launch; question Q3).
 - **Successor / recovery:** reattach check against the recorded Record before `buildLaunchPlan`.
-- **Recursive children.** A child's own `task-board spawn` must inherit **by reference plus re-resolution**, never by the patched env (N8). Proposal: the runner exports `TASK_BOARD_NETWORK=<ref>` (and `TASK_BOARD_NETWORK_ORIGIN`) as run-context variables beside `TASK_BOARD_*` (runcontext.go:31-44); the child's resolve treats it as the inherited default; a parent on A may still spawn a child on B with an explicit `--network`. Question Q2.
+- **Recursive children.** A child's own `task-board spawn` must inherit **by reference plus re-resolution**, never by the patched env (N8). Proposal: the runner exports `TASK_BOARD_NETWORK=<ref>` (and `TASK_BOARD_NETWORK_ORIGIN`) as run-context variables beside `TASK_BOARD_*` (skill-agents-management pkg/agentic/runcontext.go:31-44); the child's resolve treats it as the inherited default; a parent on A may still spawn a child on B with an explicit `--network`. This adds an origin N3 does not list (`inherited`), ranked right after `explicit` in the N4 precedence and recorded as such in the Record: TODO(decision). The critical-fixes advice proposes the existing `TASK_BOARD_RUN_ID` → parent-manifest plumbing instead of a new variable. Question Q2.
 - **Managed goal-bound runs** hand off to tb-sessiond (`cfg.ManagedSessionLaunch`, codex_goal_spawn.go:152): the binding travels in the launch request, and tb-sessiond applies it (2.3).
 
 ### 2.3 tb-sessiond: `skill-project-management` (`internal/sessionmanager`, `cmd/tb-sessiond`)
 **Advice from:** ivan-tb-critical-fixes. **Lands in:** N-C1.
 
 - **Today** the hosts build env from the **daemon's** `os.Environ()`, not the agentic plan: codex app-server (codex_host.go:160-185, `codexHostEnvironment` :261-268), claude PTY (claude_host.go:700-727, `claudeHostEnvironment` :2427-2450). The daemon re-execs itself with `os.Environ()` (detached_launch.go:72-76), so it keeps the env of the shell that first started it: the same hazard as Claude's shared `--bg` supervisor (N7). The `unset` half is what makes that safe.
-- **Insertion points.** One shared helper applied **last** to `command.Env`: codex_host.go ~:178 (after `TMPDIR`) and claude_host.go ~:711 (after `applyManagedSessionEnvironment`). Audit list (every exec site must apply it or be proven harness-free): claude preflight (claude_host.go:2416-2420), assay (claude_context_assay.go:580-582), codex context (codex_context.go:1376-1382), legacy codex (cmd/codex.go:189, 238-252), visible clients (cmd/codex.go:431-436, cmd/codex_manager.go:270-272).
+- **Insertion points.** One shared helper applied **last** to `command.Env`: codex_host.go ~:178 (after `TMPDIR`) and claude_host.go ~:711 (after `applyManagedSessionEnvironment`). Audit list (every exec site must apply it or be proven harness-free): claude preflight (claude_host.go:2416-2420), assay (claude_context_assay.go:580-582), codex context (codex_context.go:1376-1382), legacy codex (cmd/codex.go:189, 238-252), visible clients (cmd/codex.go:431-436, cmd/codex_manager.go:270-272). The same audit covers task-board's own harness preflights: the Claude goal probe (`ClaudeGoalBinaryRuntime.ProbeGoal`, internal/spawn/claude_goal.go:85-120, which runs `claude -p /goal` with the ambient env) and the Antigravity preflight (agy_preflight.go:90). This repository's `curator network exec` follows the same rule too.
 - **Carrier.** `OwnerRunContext` (launch_plan.go:123-136) for owner runs; `PrimarySessionLaunchPlan` (:74-86) / `CodexSessionLaunch` (:138) for primaries.
 - **Record.** In the host snapshots (`claudeHostSnapshot` ~:839, `codexHostSnapshot` ~:336) stored in `ProviderHostRecord.Opaque`.
-- **Resume / reattach.** The N7 check runs in `ensureHostLocked` (manager.go:1584) **before** both `Restore` (:1625) and `access.Launch` (:1678-1690). The codex app-server `Restore` reattaches to a live process without spawning: that is exactly the "new assignment on a running host" row, so it attaches only on an equal binding.
+- **Resume / reattach.** The N7 check runs in `ensureHostLocked` (manager.go:1584) **before** all three ways it gets a host: reusing the live in-memory host (the fast path, :1589-1604, which is the N7 "running host" row), `Restore` (:1625) and `access.Launch` (:1678-1690). A host with no recorded binding is unmanaged, and profiled work on it is refused. The codex app-server `Restore` reattaches to a live process without spawning: that is exactly the "new assignment on a running host" row, so it attaches only on an equal binding.
 
 ### 2.4 curator-run: `curator-agent-launcher`
 **Advice from:** ivan-tb-agents-infra-exit (today's owner) and m1max_a2a-swarm_orch (Alexey's side, which takes Curator and the launcher from 2026-10-01). **Lands in:** N-B.
@@ -118,7 +129,7 @@ Two bindings are equal when `profile_digest`, `adapter_identity` and `assurance`
 **Advice from:** m1max_a2a-swarm_orch.
 - `curator network …` dispatches to the provider `curator-network` on the trust roots (umbrella.go:120, curator-spec environments §11); no provider flags are required, and N-A still ships `--json` and a real `--version`.
 - Provider installs follow curator-spec#100 / curator#96.
-- `curator network confirm` (the widening gate, curator-trust §10) needs the presence-key signing, which does not exist yet. N-A ships a local confirmations ledger bound to the profile digest, refused inside agent sessions: TODO(decision) in the N-A PR. When curator-trust lands, the ledger is replaced and the resolver reads the trust store instead.
+- `curator network confirm` (the widening gate, curator-trust §10) needs the presence-key signing, which does not exist yet. N-A ships a local confirmations ledger bound to the profile digest, refused inside agent sessions: TODO(decision) in the planned N-A PR. When curator-trust lands, the ledger is replaced and the resolver reads the trust store instead.
 
 ---
 
@@ -128,7 +139,7 @@ Two bindings are equal when `profile_digest`, `adapter_identity` and `assurance`
 | --- | --- | --- | --- |
 | library, provider `curator-network`, contract appendix | this repo | N-A | none |
 | launch-plane hook (2.1) | skill-agents-management | N-B / N-C1 | N-A tag; proposed Decision 0019 |
-| `curator run --network`, direct mode (2.4) | curator-agent-launcher | N-B | N-A tag (2.1 optional: the launcher can patch in `Compose` first) |
+| `curator run --network`, direct mode (2.4) | curator-agent-launcher | N-B | N-A tag. The launcher may patch in `Compose` before 2.1 lands. When 2.1 lands, the launcher passes the binding to the module and removes its own `Compose` patch, so the patch is not applied twice. "Through the module" in track.md's N-B row means through this library. |
 | tracked `--network` (2.4, 2.5) | launcher + ax | after N-B | host-side `unset` + drift check in ax |
 | task-board spawn + runner (2.2) | skill-project-management | N-C1 | M2 (task-board builds launches through the module) |
 | tb-sessiond hosts (2.3) | skill-project-management | N-C1 | M3; LP Phase 0 where tb-sessiond composes its own plans |
@@ -156,6 +167,6 @@ The library is consumed **by tag**, never by `replace` or `go.work`.
 - **Q4 (tb-sessiond, critical-fixes):** codex app-server hosts serve several threads. Can the host ever set a route per session, or is "equal binding or refuse" the only honest option for the first release (proposed: the latter)?
 - **Q5 (ax / curator-spec, a2a-swarm side):** where in the ax record does the network Record live (an extension key, as proposed, or a first-class field in the next launch-plan schema), and who owns the host-side re-resolution on resume?
 - **Q6 (launcher, both advisers):** with the ownership change on 2026-10-01, who takes N-B's launcher change?
-- **Q7 (all):** muse: is `network_scope_unsupported` acceptable for the first release, or should its allowlist admit the six `set` names now?
+- **Q7 (all):** muse: is `network_scope_unsupported` acceptable until its harness is verified behind a proxy? With the post-`ChildEnv` patch, muse's allowlist does not need to change either way.
 
 Reply-by: **2026-10-01T16:00Z**, in #skill-project-management › `network-profiles-integration`. After the reply-by I send ivan-tb-keeper the proposal, the advice (quoted, objections flagged) and my recommendation, for Ivan's decision via ivan-desk.

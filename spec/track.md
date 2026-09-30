@@ -17,10 +17,10 @@ Several agents on one machine must reach the network through different applicati
 | Step | Delivers | Done when | Tracking |
 | --- | --- | --- | --- |
 | N-A | library, the file `~/.curator/network.toml`, the provider `curator-network` with `curator network exec <name> -- <cmd>` and `check --probe`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses | in progress (2026-09-30) |
-| N-B | `curator run --network` | the launcher applies the patch through the module | #7 |
-| N-C1 | explicit profile on every task-board and tb-sessiond process path, run manifests | a child and a board session use the profile, including retry and resume | #8 |
-| N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag | #9 |
-| N-D | managed gateway (sing-box), then the enforced sandbox epic | automatic proxy provisioning | #10 |
+| N-B | `curator run --network` | the launcher applies the patch through the module | [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
+| N-C1 | explicit profile on every task-board and tb-sessiond process path, run manifests | a child and a board session use the profile, including retry and resume | [#8](https://github.com/relux-works/curator-network-profiles/issues/8) |
+| N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag | [#9](https://github.com/relux-works/curator-network-profiles/issues/9) |
+| N-D | managed gateway (sing-box), then the enforced sandbox epic | automatic proxy provisioning | [#10](https://github.com/relux-works/curator-network-profiles/issues/10) |
 
 ## Integration
 
