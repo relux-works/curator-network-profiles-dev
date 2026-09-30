@@ -1,0 +1,551 @@
+{
+  "schema": "relux-network-profiles-v1",
+  "generator": "go run ./internal/contract/cmd/contract-vectors",
+  "digest": [
+    {
+      "id": "D1",
+      "note": "the specification's egress-a",
+      "name": "egress-a",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+      "same_digest_as": [
+        "D3",
+        "D5"
+      ]
+    },
+    {
+      "id": "D2",
+      "note": "the specification's egress-b",
+      "name": "egress-b",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18082",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18082",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18082\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328"
+    },
+    {
+      "id": "D3",
+      "note": "normalization: scheme and host case, trailing slash, whitespace, case and duplicates in bypass_hosts",
+      "name": "egress-a-alt",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "HTTP://127.0.0.1:18081/",
+        "bypass_hosts": [
+          "LocalHost",
+          "::1",
+          " 127.0.0.1 ",
+          "localhost"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+      "same_digest_as": [
+        "D1",
+        "D5"
+      ]
+    },
+    {
+      "id": "D4",
+      "note": "a host-name endpoint, an engine host and a suffix entry in bypass_hosts",
+      "name": "corp",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://proxy.corp.invalid:3128",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1",
+          "engine.local",
+          ".corp.invalid"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://proxy.corp.invalid:3128",
+        "bypass_hosts": [
+          ".corp.invalid",
+          "127.0.0.1",
+          "::1",
+          "engine.local",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\".corp.invalid\",\"127.0.0.1\",\"::1\",\"engine.local\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://proxy.corp.invalid:3128\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:e14a1b4ea4e09ab7ee87cbe3e2c40ff100ff2185b39c36d754e9777a5690d88a"
+    },
+    {
+      "id": "D5",
+      "note": "the profile name and probe_target are not part of the digest",
+      "name": "egress-a-copy",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ],
+        "probe_target": "probe.invalid:443"
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "probe_target": "probe.invalid:443",
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+      "same_digest_as": [
+        "D1",
+        "D3"
+      ]
+    }
+  ],
+  "envpatch": [
+    {
+      "id": "E1",
+      "note": "a clean inherited environment",
+      "profile": "D1",
+      "env": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator"
+      ],
+      "result": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E2",
+      "note": "lowercase, uppercase and mixed-case conflicts never override the profile",
+      "profile": "D1",
+      "env": [
+        "http_proxy=http://wrong.invalid:3128",
+        "HTTPS_PROXY=http://wrong.invalid:3128",
+        "Http_Proxy=http://odd.invalid:3128",
+        "PATH=/usr/bin"
+      ],
+      "result": [
+        "PATH=/usr/bin",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E3",
+      "note": "ambient NO_PROXY=* is replaced by the bypass list",
+      "profile": "D1",
+      "env": [
+        "NO_PROXY=*",
+        "no_proxy=*",
+        "PATH=/usr/bin"
+      ],
+      "result": [
+        "PATH=/usr/bin",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E4",
+      "note": "a conflicting variable present only on the host is removed and not re-set",
+      "profile": "D1",
+      "env": [
+        "ALL_PROXY=socks5://host-only.invalid:1080",
+        "all_proxy=socks5://host-only.invalid:1080",
+        "FTP_PROXY=http://host-only.invalid:3128",
+        "PATH=/usr/bin"
+      ],
+      "result": [
+        "PATH=/usr/bin",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E5",
+      "note": "idempotence: applying the patch to an already patched environment changes nothing",
+      "profile": "D1",
+      "env": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ],
+      "result": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E6",
+      "note": "the order of untouched entries is kept; an entry without '=' has no name and is kept",
+      "profile": "D1",
+      "env": [
+        "Z=1",
+        "NOEQUALS",
+        "A=2",
+        "https_proxy=http://wrong.invalid:1",
+        "B=3"
+      ],
+      "result": [
+        "Z=1",
+        "NOEQUALS",
+        "A=2",
+        "B=3",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    },
+    {
+      "id": "E7",
+      "note": "unmanaged: no selection at all leaves the environment untouched, ambient proxies included",
+      "profile": "unmanaged",
+      "env": [
+        "HTTPS_PROXY=http://ambient.invalid:3128",
+        "NO_PROXY=*",
+        "PATH=/usr/bin"
+      ],
+      "result": [
+        "HTTPS_PROXY=http://ambient.invalid:3128",
+        "NO_PROXY=*",
+        "PATH=/usr/bin"
+      ]
+    },
+    {
+      "id": "E8",
+      "note": "a parent bound to egress-a spawns a child on egress-b: by reference and re-resolution, never by copying",
+      "profile": "D2",
+      "env": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ],
+      "result": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18082",
+        "HTTPS_PROXY=http://127.0.0.1:18082",
+        "http_proxy=http://127.0.0.1:18082",
+        "https_proxy=http://127.0.0.1:18082",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ]
+    }
+  ],
+  "equality": [
+    {
+      "id": "Q1",
+      "note": "equal content under another name is the same binding",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-a-copy",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": true,
+      "event": "reattach",
+      "per_session_route": false,
+      "outcome": "reattach"
+    },
+    {
+      "id": "Q2",
+      "note": "changed content under an unchanged name: resume is refused as drift, never re-routed",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "reattach",
+      "per_session_route": true,
+      "refusal": "network_profile_drift"
+    },
+    {
+      "id": "Q3",
+      "note": "a new assignment on a running host bound to another profile, no per-session route",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-b",
+        "profile_digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "new-assignment",
+      "per_session_route": false,
+      "refusal": "network_scope_unsupported"
+    },
+    {
+      "id": "Q4",
+      "note": "the same assignment when the adapter routes per session",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-b",
+        "profile_digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "new-assignment",
+      "per_session_route": true,
+      "outcome": "set-per-session"
+    },
+    {
+      "id": "Q5",
+      "note": "a different harness build is a different launch shape",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "2.1.0",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "reattach",
+      "per_session_route": true,
+      "refusal": "network_scope_unsupported"
+    },
+    {
+      "id": "Q6",
+      "note": "a fresh process never compares: new launch",
+      "recorded": {
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit"
+      },
+      "fresh": {
+        "profile_ref": "egress-b",
+        "profile_digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "new-launch",
+      "per_session_route": false,
+      "outcome": "launch"
+    }
+  ],
+  "engine_hosts": [
+    {
+      "id": "G1",
+      "note": "a loopback engine on 127.0.0.1 is covered by the required set",
+      "profile": "D1",
+      "engine_host": "127.0.0.1",
+      "covered": true
+    },
+    {
+      "id": "G2",
+      "note": "brackets and a port are stripped before the exact match",
+      "profile": "D1",
+      "engine_host": "[::1]:11434",
+      "covered": true
+    },
+    {
+      "id": "G3",
+      "note": "an engine host absent from bypass_hosts is a configuration conflict",
+      "profile": "D1",
+      "engine_host": "engine.local",
+      "covered": false,
+      "refusal": "network_configuration_conflict"
+    },
+    {
+      "id": "G4",
+      "note": "coverage is case-insensitive",
+      "profile": "D4",
+      "engine_host": "ENGINE.LOCAL",
+      "covered": true
+    },
+    {
+      "id": "G5",
+      "note": "a suffix entry does not cover by inclusion; coverage is exact",
+      "profile": "D4",
+      "engine_host": "api.corp.invalid",
+      "covered": false,
+      "refusal": "network_configuration_conflict"
+    }
+  ]
+}
