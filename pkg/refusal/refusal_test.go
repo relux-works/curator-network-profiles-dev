@@ -71,7 +71,7 @@ func TestErrorRendering(t *testing.T) {
 		{"full", refusal.New(refusal.CodeProfileUnknown, "egress-x", "no such network profile"), "network_profile_unknown: egress-x: no such network profile"},
 		{"no subject", refusal.New(refusal.CodeFileUnreadable, "", "HOME is not set"), "network_file_unreadable: HOME is not set"},
 		{"no detail", refusal.New(refusal.CodeProfileDrift, "egress-a", ""), "network_profile_drift: egress-a"},
-		{"quoted subject", refusal.New(refusal.CodeProfileUnknown, "bad name\nnext", "x"), "network_profile_unknown: \"bad name\\nnext\": x"},
+		{"invalid subject", refusal.New(refusal.CodeProfileUnknown, "bad name\nnext", "x"), "network_profile_unknown: <invalid name>: x"},
 		{"nil", nil, "network refusal"},
 	}
 	for _, tc := range cases {
@@ -83,8 +83,8 @@ func TestErrorRendering(t *testing.T) {
 		})
 	}
 	long := refusal.New(refusal.CodeProfileUnknown, strings.Repeat("x y", 60), "")
-	if s := long.Error(); len(s) > 120 || !strings.Contains(s, "…") {
-		t.Errorf("long subject not truncated: %q", s)
+	if s := long.Error(); s != "network_profile_unknown: <invalid name>" {
+		t.Errorf("long subject not replaced: %q", s)
 	}
 }
 
@@ -115,5 +115,18 @@ func TestCodeOfAndIs(t *testing.T) {
 	var typedNil *refusal.Refusal
 	if _, ok := refusal.CodeOf(typedNil); ok {
 		t.Fatal("typed nil classified")
+	}
+}
+
+func TestInvalidSubjectsAreReplaced(t *testing.T) {
+	for _, subject := range []string{"http://u:pw@h:1", "bad name\nnext", strings.Repeat("x", 81)} {
+		r := refusal.New(refusal.CodeProfileUnknown, subject, "unknown")
+		if r.Subject != "<invalid name>" || r.Error() != "network_profile_unknown: <invalid name>: unknown" {
+			t.Errorf("invalid subject was retained")
+		}
+		direct := &refusal.Refusal{Code: refusal.CodeProfileUnknown, Subject: subject}
+		if direct.Error() != "network_profile_unknown: <invalid name>" {
+			t.Error("direct refusal echoed invalid subject")
+		}
 	}
 }

@@ -14,7 +14,6 @@ package refusal
 import (
 	"errors"
 	"regexp"
-	"strconv"
 )
 
 // Codes of spec N10, in specification order.
@@ -89,6 +88,9 @@ type Refusal struct {
 // unknown code is kept verbatim so a caller bug stays visible rather
 // than being silently renamed.
 func New(code, subject, detail string) *Refusal {
+	if subject != "" {
+		subject = safeSubject(subject)
+	}
 	return &Refusal{Code: code, Subject: subject, Detail: detail}
 }
 
@@ -137,15 +139,11 @@ func As(err error) (*Refusal, bool) {
 
 var plainSubject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`)
 
-// safeSubject keeps a well-formed identifier as is and quotes (and
-// truncates) anything else, so an operand typed on a command line can
-// never smuggle control characters or a whole line into a diagnostic.
+// safeSubject keeps a well-formed identifier and replaces every other
+// subject with a fixed placeholder, so invalid names cannot leak credentials.
 func safeSubject(s string) string {
 	if plainSubject.MatchString(s) {
 		return s
 	}
-	if len(s) > 64 {
-		s = s[:64] + "…"
-	}
-	return strconv.Quote(s)
+	return "<invalid name>"
 }

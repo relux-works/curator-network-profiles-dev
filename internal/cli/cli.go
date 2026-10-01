@@ -127,7 +127,7 @@ func Run(ctx context.Context, args []string, deps Deps) int {
 		case "--help", "-h", "help":
 			helpFlag = true
 		default:
-			return a.usage("unknown option " + args[0])
+			return a.usage("unknown option")
 		}
 		args = args[1:]
 	}
@@ -169,7 +169,7 @@ func Run(ctx context.Context, args []string, deps Deps) int {
 	case "exec":
 		return a.exec(rest)
 	default:
-		return a.usage("unknown verb " + verb)
+		return a.usage("unknown verb")
 	}
 }
 
@@ -189,7 +189,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	rest := args
 	for {
 		if err := fs.Parse(rest); err != nil {
-			return nil, err
+			return nil, safeFlagError(fs, err)
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
@@ -198,6 +198,23 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, rest[0])
 		rest = rest[1:]
 	}
+}
+
+// safeFlagError discards flag's raw error, which may contain an operand or
+// value. Only names registered by this program may appear in a diagnostic.
+func safeFlagError(fs *flag.FlagSet, err error) error {
+	if errors.Is(err, flag.ErrHelp) {
+		return flag.ErrHelp
+	}
+	detail := "invalid flag"
+	fs.VisitAll(func(f *flag.Flag) {
+		if strings.HasPrefix(err.Error(), "invalid value ") && strings.Contains(err.Error(), " for flag -"+f.Name+":") {
+			detail = "invalid value for flag -" + f.Name
+		} else if err.Error() == "flag needs an argument: -"+f.Name {
+			detail = "flag -" + f.Name + " requires a value"
+		}
+	})
+	return errors.New(detail)
 }
 
 // operands parses a verb's arguments; it reports usage errors itself
@@ -215,7 +232,7 @@ func (a *app) operands(fs *flag.FlagSet, args []string, min, max int) ([]string,
 		return nil, a.usage(fs.Name() + ": missing operand"), false
 	}
 	if max >= 0 && len(pos) > max {
-		return nil, a.usage(fs.Name() + ": unexpected operand " + pos[max]), false
+		return nil, a.usage(fs.Name() + ": unexpected operand"), false
 	}
 	return pos, ExitOK, true
 }
@@ -234,7 +251,8 @@ type errorBody struct {
 
 func bodyOf(err error) errorBody {
 	if r, ok := refusal.As(err); ok {
-		return errorBody{Code: r.Code, Message: r.Error(), Subject: r.Subject}
+		safe := refusal.New(r.Code, r.Subject, r.Detail)
+		return errorBody{Code: safe.Code, Message: safe.Error(), Subject: safe.Subject}
 	}
 	// TODO(decision): unexpected internal failures use the existing conflict
 	// code; no implementation detail or new code crosses the boundary.

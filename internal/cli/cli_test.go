@@ -606,7 +606,7 @@ func TestExecRefusesBeforeExec(t *testing.T) {
 	h.exec.err = errors.New("permission denied")
 	fp.fail = nil
 	code, _, stderr := h.run("exec", "egress-b", "--", "agent")
-	if code != 2 || !strings.Contains(stderr, "cannot exec agent: permission denied") {
+	if code != 2 || !strings.Contains(stderr, "cannot execute command") {
 		t.Fatalf("exec failure: %d %q", code, stderr)
 	}
 	code, stdout, stderr := h.run("--json", "exec", "egress-zz", "--", "agent")

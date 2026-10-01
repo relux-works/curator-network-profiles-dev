@@ -199,7 +199,28 @@ func (a *app) add(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	if err := store.Add(paths, p); err != nil {
+	if err := store.Edit(paths, func(e *store.Editor) error {
+		// Refuse duplicate names before touching their current confirmation.
+		file, _, err := store.Read(paths)
+		if err != nil {
+			return err
+		}
+		if _, found := file.Lookup(name); found {
+			return refusal.New(refusal.CodeConfigurationConflict, name, "profile already exists; remove it first")
+		}
+		ledger, err := confirm.Read(paths.Ledger)
+		if err != nil {
+			return err
+		}
+		// Clear stale confirmation before widening the catalog. If cleanup fails,
+		// no profile is added; if Add fails, losing a stale entry remains safe.
+		if ledger.Delete(name) {
+			if err := confirm.Write(paths.Ledger, ledger); err != nil {
+				return err
+			}
+		}
+		return e.Add(p)
+	}); err != nil {
 		return a.fail(err)
 	}
 	digest := netprofile.Digest(p)
@@ -229,7 +250,7 @@ func (a *app) remove(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	dropped := false
+	dropped, removed := false, false
 	err = store.Edit(paths, func(e *store.Editor) error {
 		// Validate the ledger before changing the catalog. These two atomic
 		// writes are ordered but not a cross-file transaction.
@@ -238,7 +259,12 @@ func (a *app) remove(args []string) int {
 			return err
 		}
 		if err := e.Remove(name); err != nil {
-			return err
+			code, _ := refusal.CodeOf(err)
+			if _, stale := ledger.Entry(name); code != refusal.CodeProfileUnknown || !stale {
+				return err
+			}
+		} else {
+			removed = true
 		}
 		dropped = ledger.Delete(name)
 		if dropped {
@@ -256,7 +282,11 @@ func (a *app) remove(args []string) int {
 			Name                string `json:"name"`
 			Removed             bool   `json:"removed"`
 			ConfirmationDropped bool   `json:"confirmation_dropped"`
-		}{SchemaRemove, true, name, true, dropped})
+		}{SchemaRemove, true, name, removed, dropped})
+		return ExitOK
+	}
+	if !removed {
+		fmt.Fprintf(a.deps.Stdout, "dropped stale confirmation entry for %s (profile already absent)\n", name)
 		return ExitOK
 	}
 	fmt.Fprintf(a.deps.Stdout, "removed %s", name)

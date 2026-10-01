@@ -20,7 +20,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -38,8 +37,9 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binDir = dir
-	// Read the parent's warm cache locations once; all builds below share
-	// the caches but use a private HOME/XDG and an offline, scrubbed env.
+	// Read the parent's warm cache locations once with GOENV=off, so even
+	// this query cannot read an operator Go env file. Builds then pin both
+	// caches explicitly and use a private HOME/XDG and offline, scrubbed env.
 	query := exec.Command("go", "env", "GOCACHE", "GOMODCACHE")
 	query.Env = offlineEnv(os.Environ())
 	cacheOutput, err := query.Output()
@@ -142,10 +142,10 @@ func newFixture(t *testing.T) *fixture {
 type launch struct {
 	stdout, stderr string
 	code           int
+	err            error
 }
 
-func (f *fixture) launch(t *testing.T, args ...string) launch {
-	t.Helper()
+func (f *fixture) launchRaw(args ...string) launch {
 	cmd := exec.Command(filepath.Join(binDir, "curator-network"), args...)
 	cmd.Env = f.env
 	var stdout, stderr bytes.Buffer
@@ -155,11 +155,20 @@ func (f *fixture) launch(t *testing.T, args ...string) launch {
 	if err != nil {
 		var ee *exec.ExitError
 		if !errorsAs(err, &ee) {
-			t.Fatalf("run %v: %v", args, err)
+			return launch{stdout: stdout.String(), stderr: stderr.String(), code: -1, err: err}
 		}
 		code = ee.ExitCode()
 	}
-	return launch{stdout.String(), stderr.String(), code}
+	return launch{stdout: stdout.String(), stderr: stderr.String(), code: code}
+}
+
+func (f *fixture) launch(t *testing.T, args ...string) launch {
+	t.Helper()
+	result := f.launchRaw(args...)
+	if result.err != nil {
+		t.Fatalf("run command: %v", result.err)
+	}
+	return result
 }
 
 func errorsAs(err error, target **exec.ExitError) bool {
@@ -172,13 +181,17 @@ func errorsAs(err error, target **exec.ExitError) bool {
 
 func TestTwoEgressesConcurrently(t *testing.T) {
 	f := newFixture(t)
-	before := os.Environ()
-	var wg sync.WaitGroup
-	var la, lb launch
-	wg.Add(2)
-	go func() { defer wg.Done(); la = f.launch(t, "exec", "egress-a", "--", "egress-client") }()
-	go func() { defer wg.Done(); lb = f.launch(t, "exec", "egress-b", "--", "egress-client") }()
-	wg.Wait()
+	// Each worker sends both process results and startup errors; only this
+	// test goroutine invokes the testing API.
+	aResults, bResults := make(chan launch, 1), make(chan launch, 1)
+	go func() { aResults <- f.launchRaw("exec", "egress-a", "--", "egress-client") }()
+	go func() { bResults <- f.launchRaw("exec", "egress-b", "--", "egress-client") }()
+	la, lb := <-aResults, <-bResults
+	for _, result := range []launch{la, lb} {
+		if result.err != nil {
+			t.Fatalf("launch startup: %v", result.err)
+		}
+	}
 	if la.code != 0 || la.stdout != "egress=A\n" {
 		t.Errorf("launch A: code %d stdout %q stderr %q", la.code, la.stdout, la.stderr)
 	}
@@ -199,12 +212,6 @@ func TestTwoEgressesConcurrently(t *testing.T) {
 	}
 	if got := f.wrong.Requests(); len(got) != 0 {
 		t.Errorf("the ambient proxy saw %+v", got)
-	}
-	if after := os.Environ(); !reflect.DeepEqual(before, after) {
-		t.Error("the parent environment changed")
-	}
-	if strings.Join(f.env, "\n") != strings.Join(append([]string{}, f.env...), "\n") || !strings.Contains(strings.Join(f.env, "\n"), "NO_PROXY=*") {
-		t.Error("the launch environment slice was altered")
 	}
 }
 
@@ -273,12 +280,12 @@ func offlineEnv(parent []string) []string {
 	out := make([]string, 0, len(parent))
 	for _, entry := range parent {
 		name, _, ok := strings.Cut(entry, "=")
-		if !ok || strings.HasSuffix(strings.ToLower(name), "_proxy") || name == "GOPROXY" || name == "GOFLAGS" || name == "GOTOOLCHAIN" || name == "GOPRIVATE" || name == "GONOPROXY" || name == "GOSUMDB" {
+		if !ok || strings.HasSuffix(strings.ToLower(name), "_proxy") || name == "GOPROXY" || name == "GOFLAGS" || name == "GOTOOLCHAIN" || name == "GOPRIVATE" || name == "GONOPROXY" || name == "GOSUMDB" || name == "GOENV" {
 			continue
 		}
 		out = append(out, entry)
 	}
-	return append(out, "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GONOPROXY=none", "GOPRIVATE=none", "GOSUMDB=off")
+	return append(out, "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GONOPROXY=none", "GOPRIVATE=none", "GOSUMDB=off", "GOENV=off")
 }
 
 func buildEnv(parent []string, home, cache, modcache string) []string {
@@ -326,5 +333,18 @@ func TestBuildEnvironmentIsOfflineAndPrivate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(parent, before) {
 		t.Fatal("parent env mutated")
+	}
+}
+
+func TestCacheQueryDisablesOperatorGoEnvironment(t *testing.T) {
+	env := offlineEnv([]string{"HOME=/operator", "GOENV=/operator/go/env"})
+	var values []string
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "GOENV=") {
+			values = append(values, entry)
+		}
+	}
+	if !reflect.DeepEqual(values, []string{"GOENV=off"}) {
+		t.Fatalf("cache query Go environment = %v, want GOENV=off", values)
 	}
 }

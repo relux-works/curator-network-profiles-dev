@@ -118,7 +118,7 @@ func (a *app) exec(args []string) int {
 	fmt.Fprintf(a.deps.Stderr, "%s: network=%s digest=%s adapter=%s preflight=tcp %s, connect %s, tls %s\n",
 		Name, record.ProfileRef, record.ProfileDigest, record.AdapterIdentity.Adapter, pr.TCP, pr.Connect, pr.TLS)
 	if err := a.deps.Exec(path, command, env); err != nil {
-		return a.usage("exec: cannot exec " + command[0] + ": " + err.Error())
+		return a.usage("exec: cannot execute command")
 	}
 	// Exec replaces the process; a return without error cannot happen in
 	// production. A test double that returns nil ends the run here.
@@ -135,19 +135,19 @@ func lookPath(file string, env []string) (string, error) {
 		if executable(file) {
 			return file, nil
 		}
-		return "", errors.New("command is not executable: " + file)
+		return "", errors.New("command is not executable")
 	}
 	path, _ := envutil.Lookup(env, "PATH")
 	for _, dir := range filepath.SplitList(path) {
 		if dir == "" {
-			dir = "."
+			continue
 		}
 		candidate := filepath.Join(dir, file)
 		if executable(candidate) {
 			return candidate, nil
 		}
 	}
-	return "", errors.New("command not found in PATH: " + file)
+	return "", errors.New("command not found in PATH")
 }
 
 func executable(p string) bool {

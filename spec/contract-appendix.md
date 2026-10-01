@@ -1099,7 +1099,7 @@ them and prints `curator-network: <code>: <detail>`.
 | `network_profile_unknown` | the selected profile is not in the catalog (or the catalog is absent) |
 | `network_profile_denied` | outside the allowed set, or known but not confirmed at its current digest |
 | `network_scope_unsupported` | `enforced` requested; a running host bound differently without a per-session route; a resume whose binding differs otherwise than by drift |
-| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; an edit that would conflict (existing name, operator default) |
+| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; an edit that would conflict (existing name, operator default); a held catalog edit lock |
 | `network_proxy_unreachable` | TCP failed or timed out, CONNECT non-2xx other than 407, or the TLS handshake failed |
 | `network_proxy_auth_failed` | CONNECT answered 407 |
 | `network_profile_drift` | resume of an existing run under the same profile name with a different digest |
@@ -1107,7 +1107,28 @@ them and prints `curator-network: <code>: <detail>`.
 | `network_file_unreadable` | cannot read or write a catalog, backup or ledger; HOME unset; parse, encode, directory or lock creation failure (addition, TODO(decision)) |
 | `network_confirm_refused` | `confirm` inside an agent session, without a terminal, or not answered `yes` (addition, TODO(decision)) |
 
-Usage errors are not refusals (exit 2).
+Usage errors are not refusals (exit 2). In usage diagnostics, operands and flag values are never echoed.
+The flag package's own output is suppressed; diagnostics use fixed phrases
+and registered flag names, such as `invalid value for flag -timeout`. A refusal
+subject that fails the plain identifier rule becomes `<invalid name>` in
+human and JSON errors.
+
+A crash-stale `network.toml.lock` has no CLI cleanup. After checking no edit
+is running, the operator deletes `network.toml.lock` by hand. TODO(decision):
+whether to add a cleanup command.
+
+CLI `add` clears any ledger entry for a new name before writing the catalog,
+under the catalog edit lock; failure to clear it leaves the catalog untouched.
+If the subsequent catalog write fails, that stale entry remains deleted.
+An identical re-add always needs `confirm`. CLI `remove` of an absent profile
+with a stale entry deletes the entry and exits 0 with a cleanup message
+(`removed=false`, `confirmation_dropped=true` in JSON). A failed second write
+in a normal removal leaves the catalog removal applied; retry `remove` after
+correcting the ledger write failure to clean up the stale entry.
+
+TODO(decision): `confirm` does not take the catalog lock; concurrent confirmation
+can overwrite an add/remove ledger change. Decide whether to serialize its
+catalog read, operator prompt and ledger write with that lock.
 
 Unexpected internal failures map to `network_configuration_conflict` with the
 fixed detail `internal operation failed` (TODO(decision)); no extra code is

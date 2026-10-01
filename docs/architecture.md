@@ -127,23 +127,32 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   Read-only catalog loads may follow symlinks. Refusal never replaces the
   link or modifies its target.
 - `store.Edit` holds the advisory `network.toml.lock` (O_CREATE|O_EXCL,
-  0600) across catalog read/edit/write and the CLI remove's ledger operations.
-  `Add`/`Remove` use this same lock. Contention refuses immediately as
-  `network_configuration_conflict`; every normal return removes the acquired
-  lock. A crash may leave a stale lock: after checking no edit is running,
-  the operator removes it explicitly. Manual edits and separate `confirm`
-  operations do not participate in this advisory lock.
+  0600) across catalog read/edit/write and CLI add/remove ledger operations.
+  `Add`/`Remove` use this same lock. A held catalog edit lock refuses immediately
+  as `network_configuration_conflict`; every normal return removes the acquired
+  lock. A crash-stale lock has no CLI cleanup: after checking no edit is running,
+  the operator deletes `network.toml.lock` by hand. TODO(decision): whether to
+  add a cleanup command.
+- TODO(decision): `confirm` does not take the catalog lock. A concurrent confirm
+  can overwrite an add/remove ledger change. Decide whether to serialize its
+  catalog read, operator prompt and ledger write with the same lock. Manual
+  edits also do not participate in the advisory lock.
+- CLI `add` refuses an existing name before touching its confirmation. It reads
+  and validates the ledger, deletes any entry for the new name and writes that
+  cleanup before writing the catalog, all under `store.Edit`. A ledger failure
+  leaves the catalog and backup untouched. If the subsequent catalog write
+  fails, the stale entry stays deleted; retrying the add still needs `confirm`.
+  Re-adding identical content never reuses an old confirmation.
 - CLI `remove` first reads and validates the ledger, then writes the catalog,
   then drops the entry and writes the ledger. A ledger read/validation failure
   leaves the catalog and backup untouched. These are two ordered atomic
   writes, not a cross-file transaction: if the ledger write fails, removal
   remains applied, its old entry remains in the ledger, and the CLI exits 1
   with `network_file_unreadable`. An absent profile cannot launch; the backup
-  contains the prior catalog. After correcting the write failure, the operator
-  must delete the stale ledger entry explicitly; retrying `remove` of the
-  already absent profile returns `network_profile_unknown`. The stale entry
-  cannot authorize a missing profile, but a later re-add with the identical
-  digest could match it, so cleanup must precede that re-add.
+  contains the prior catalog. After correcting the write failure, retry
+  `remove`: an absent profile with a stale entry drops that entry and exits 0
+  with a clear cleanup message (`removed=false`, `confirmation_dropped=true`
+  in JSON). If neither profile nor entry exists, it is `network_profile_unknown`.
 
 `~/.curator/network.confirmations.json` (`relux-network-confirmations-v1`) maps
 a profile name to the digest it was confirmed at and when. A profile whose
@@ -157,13 +166,18 @@ The CLI prints `curator-network: <code>: <detail>` on stderr and exits 1; with
 `--json` it also prints `{"schema":"curator-network-error-v1","ok":false,
 "error":{"code","message","subject"}}` on stdout. Usage errors are not
 refusals: `curator-network: usage: <detail>` plus the synopsis, exit 2, no JSON.
+In usage diagnostics, operands and flag values are never echoed. The flag
+package's own output is suppressed; messages use only fixed phrases and known
+flag names, such as `invalid value for flag -timeout`. Refusal subjects that
+fail the plain identifier rule become `<invalid name>` in both human and JSON
+errors.
 
 | Code | When | Raised by | Exit |
 | --- | --- | --- | --- |
 | `network_profile_unknown` | the selected name is not in the catalog (or the catalog is absent) | resolve, store.Remove, cli show/check/confirm | 1 |
 | `network_profile_denied` | the name is outside the allowed set; or known but not confirmed at its current digest (detail `unconfirmed`) | resolve | 1 |
 | `network_scope_unsupported` | `enforced` assurance requested (TODO(decision)); a running host bound differently with no per-session route; a resume whose binding differs otherwise than by drift | resolve, binding.CheckReattach, gateway | 1 |
-| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; `add` of an existing name; `remove` of the operator default (both TODO(decision)) | resolve, store | 1 |
+| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; `add` of an existing name; `remove` of the operator default (both TODO(decision)); a held catalog edit lock | resolve, store | 1 |
 | `network_proxy_unreachable` | TCP dial failed or timed out; CONNECT answered non-2xx other than 407; TLS handshake failed; the facts are in the probe result | probe | 1 |
 | `network_proxy_auth_failed` | CONNECT answered 407 | probe | 1 |
 | `network_profile_drift` | resume of an existing run: same profile name, different digest | binding.CheckReattach | 1 |
@@ -195,7 +209,7 @@ document `curator-network-<verb>-v1` on success.
 | `remove <name>` | no | catalog, ledger | narrowing, applies at once; drops the ledger entry |
 | `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | only with `--probe` | no | without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
 | `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes` |
-| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (TCP always; CONNECT+TLS with `probe_target`) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH` |
+| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (TCP always; CONNECT+TLS with `probe_target`) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
 
 `Deps` is the only boundary: production main wires `os.Environ()`, the standard
 streams, the char-device test on stdin, `syscall.Exec`, `probe.Dialer` and
