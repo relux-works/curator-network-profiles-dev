@@ -2,14 +2,19 @@ package cli
 
 import (
 	"errors"
-	"github.com/relux-works/curator-network-profiles/pkg/refusal"
+	"strings"
 	"testing"
+
+	"github.com/relux-works/curator-network-profiles/pkg/refusal"
 )
 
 func TestUnexpectedFailureUsesClosedSanitizedCode(t *testing.T) {
 	body := bodyOf(errors.New("private path /operator/secret"))
-	if !refusal.Valid(body.Code) || body.Message == "private path /operator/secret" {
+	if !refusal.Valid(body.Code) || strings.Contains(body.Message+body.Subject, "secret") {
 		t.Fatalf("unclosed or unsanitized error: %+v", body)
+	}
+	if body.Subject != "" || body.Message != body.Code+": internal operation failed" {
+		t.Fatalf("unexpected internal failure detail: %+v", body)
 	}
 }
 

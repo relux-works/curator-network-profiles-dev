@@ -137,7 +137,12 @@ func (h *harness) confirmAll() {
 		p, _ := f.Lookup(name)
 		l.Set(name, netprofile.Digest(p), h.now)
 	}
-	if err := confirm.Write(filepath.Join(h.home, ".curator", "network.confirmations.json"), l); err != nil {
+	// Fixture only: production confirm.Write stays atomic and fsynced.
+	data, err := json.Marshal(l)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.home, ".curator", "network.confirmations.json"), data, 0o600); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -502,7 +507,7 @@ func TestExecDryRun(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("dry run: %d %q %q", code, stdout, stderr)
 	}
-	for _, want := range []string{"dry run: would exec codex --full-auto", "profile_ref:      egress-a", "profile_digest:   sha256:1e5912de", "adapter=generic-env-v1 harness=exec build=\"\" entrypoint=codex", "assurance:        cooperative", "origin:           explicit", "probe:            tcp skipped, connect skipped, tls skipped at 2026-10-01T12:00:00Z", "set:   HTTPS_PROXY=http://127.0.0.1:18081"} {
+	for _, want := range []string{"dry run: would exec codex (+1 args)", "profile_ref:      egress-a", "profile_digest:   sha256:1e5912de", "adapter=generic-env-v1 harness=exec build=\"\" entrypoint=codex", "assurance:        cooperative", "origin:           explicit", "probe:            tcp skipped, connect skipped, tls skipped at 2026-10-01T12:00:00Z", "set:   HTTPS_PROXY=http://127.0.0.1:18081"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, stdout)
 		}
@@ -519,8 +524,8 @@ func TestExecDryRun(t *testing.T) {
 	if _, leaks := b["env_patch"]; leaks {
 		t.Fatal("record carries the env patch")
 	}
-	if m["patch"].(map[string]any)["set"].([]any)[0].(map[string]any)["value"] != "http://127.0.0.1:18082" || m["command"].([]any)[0] != "/usr/local/bin/claude" {
-		t.Fatalf("patch/command = %v", m)
+	if m["patch"].(map[string]any)["set"].([]any)[0].(map[string]any)["value"] != "http://127.0.0.1:18082" || m["argc"] != float64(1) || m["entrypoint"] != "claude" {
+		t.Fatalf("patch/command summary = %v", m)
 	}
 }
 

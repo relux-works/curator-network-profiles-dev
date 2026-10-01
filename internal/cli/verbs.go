@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -249,6 +251,17 @@ func (a *app) remove(args []string) int {
 	paths, err := store.PathsFromEnv(a.deps.Env)
 	if err != nil {
 		return a.fail(err)
+	}
+	// A read-only refusal must not create a namespace or edit lock. A stale
+	// ledger entry still needs cleanup under Edit; re-read it inside the lock.
+	if _, err := os.Lstat(paths.File); errors.Is(err, os.ErrNotExist) {
+		ledger, err := confirm.Read(paths.Ledger)
+		if err != nil {
+			return a.fail(err)
+		}
+		if _, stale := ledger.Entry(name); !stale {
+			return a.fail(refusal.New(refusal.CodeProfileUnknown, name, "no such network profile on this machine"))
+		}
 	}
 	dropped, removed := false, false
 	err = store.Edit(paths, func(e *store.Editor) error {

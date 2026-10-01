@@ -89,20 +89,24 @@ func TestParseTable(t *testing.T) {
 		doc     string
 		code    string
 		subject string
-		detail  string // substring
-		absent  string // substring that must not appear in the error
+		detail  string   // substring
+		absent  []string // substrings that must not appear in the error
 	}{
 		{name: "empty document", doc: "", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "schema is required"},
 		{name: "wrong schema", doc: "schema = \"relux-network-profiles-v2\"\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "schema must be"},
 		{name: "only schema", doc: "schema = \"relux-network-profiles-v1\"\n"},
 		{name: "syntax error", doc: "schema = \n", code: refusal.CodeFileUnreadable, subject: "network.toml", detail: "syntax error at line 1"},
-		{name: "unknown top-level key", doc: "schema = \"relux-network-profiles-v1\"\nextra = 1\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key extra"},
-		{name: "unknown profile key", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\nproxy_password = \"hunter2\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "unknown key networks.egress-a.proxy_password", absent: "hunter2"},
+		{name: "unknown top-level key", doc: "schema = \"relux-network-profiles-v1\"\nextra = 1\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key in catalog (count: 1)", absent: []string{"extra"}},
+		{name: "unknown profile key", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\nproxy_password = \"hunter2\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "unknown key in [networks.egress-a] (count: 1)", absent: []string{"proxy_password", "hunter2"}},
+		{name: "unknown secret top-level keys", doc: "schema = \"relux-network-profiles-v1\"\npw_secret = 1\npw_token = 2\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key in catalog (count: 2)", absent: []string{"pw"}},
+		{name: "unknown key in unsafe profile name", doc: "schema = \"relux-network-profiles-v1\"\n[networks.\"u:pw@h\"]\npw_secret = 1\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key in catalog (count: 1)", absent: []string{"pw"}},
+		{name: "multiple unknown keys in one profile", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\npw_secret = 1\npw_token = 2\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "unknown key in [networks.egress-a] (count: 2)", absent: []string{"pw"}},
+		{name: "unknown keys across profiles", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\npw_secret = 1\n[networks.b]\npw_token = 2\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key in catalog (count: 2)", absent: []string{"pw"}},
 		{name: "type mismatch", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = \"localhost\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "networks.egress-a.bypass_hosts: wrong type"},
 		{name: "bad name", doc: "schema = \"relux-network-profiles-v1\"\n[networks.Egress-A]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "Egress-A", detail: "name must match"},
 		{name: "unknown kind", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"socks5\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "kind is not supported"},
 		{name: "missing kind", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "kind is required"},
-		{name: "credentials in endpoint never echoed", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://alice:s3cret@127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "userinfo", absent: "s3cret"},
+		{name: "credentials in endpoint never echoed", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://alice:s3cret@127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "userinfo", absent: []string{"s3cret"}},
 		{name: "missing required bypass", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "must include localhost, 127.0.0.1 and ::1"},
 		{name: "star bypass", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\", \"*\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "\"*\" is not allowed (it would disable the profile)"},
 		{name: "default unknown", doc: "schema = \"relux-network-profiles-v1\"\ndefault = \"nope\"\n", code: refusal.CodeProfileInvalid, subject: "default", detail: "unknown profile"},
@@ -138,8 +142,10 @@ func TestParseTable(t *testing.T) {
 			if tc.detail != "" && !strings.Contains(err.Error(), tc.detail) {
 				t.Errorf("detail %q not in %q", tc.detail, err.Error())
 			}
-			if tc.absent != "" && strings.Contains(err.Error(), tc.absent) {
-				t.Errorf("secret %q leaked into %q", tc.absent, err.Error())
+			for _, secret := range tc.absent {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("secret %q leaked into %q", secret, err.Error())
+				}
 			}
 		})
 	}

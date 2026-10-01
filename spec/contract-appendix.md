@@ -646,7 +646,7 @@ egress-a, `D2` is egress-b) or `unmanaged`.
 identities are equal when all four are equal. The generic adapter reports
 `adapter = "generic-env-v1"`; the caller fills `harness`, `build` and
 `entrypoint` (the provider's `exec` fills `harness = "exec"`, `entrypoint =
-basename(argv[0])`, `build = ""`).
+the sanitized basename of argv[0] (see §5)`, `build = ""`).
 
 ### 3.2 Binding
 
@@ -1107,7 +1107,15 @@ them and prints `curator-network: <code>: <detail>`.
 | `network_file_unreadable` | cannot read or write a catalog, backup or ledger; HOME unset; parse, encode, directory or lock creation failure (addition, TODO(decision)) |
 | `network_confirm_refused` | `confirm` inside an agent session, without a terminal, or not answered `yes` (addition, TODO(decision)) |
 
-Usage errors are not refusals (exit 2). In usage diagnostics, operands and flag values are never echoed.
+Usage errors are not refusals (exit 2). In usage diagnostics,
+operands and flag values are never echoed. This rule also covers the command
+vector in dry runs and real-exec diagnostics. Only a sanitized entrypoint is
+shown: `basename(argv[0])` when it passes the plain-subject rule
+(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`), otherwise `<command>`. The binding's
+`adapter_identity.entrypoint` uses that same value. Human dry runs print
+`would exec <entrypoint> (+N args)`, where N excludes the entrypoint. JSON dry
+runs replace `command` with integer `argc` (including the entrypoint) and
+sanitized `entrypoint`; no command arguments or entrypoint directory appear.
 The flag package's own output is suppressed; diagnostics use fixed phrases
 and registered flag names, such as `invalid value for flag -timeout`. A refusal
 subject that fails the plain identifier rule becomes `<invalid name>` in
@@ -1124,11 +1132,18 @@ An identical re-add always needs `confirm`. CLI `remove` of an absent profile
 with a stale entry deletes the entry and exits 0 with a cleanup message
 (`removed=false`, `confirmation_dropped=true` in JSON). A failed second write
 in a normal removal leaves the catalog removal applied; retry `remove` after
-correcting the ledger write failure to clean up the stale entry.
+correcting the ledger write failure to clean up the stale entry. With no catalog
+and no stale entry, `remove` refuses without creating `.curator` or acquiring
+an edit lock. Removing a confirmed operator default refuses with
+`network_configuration_conflict`; catalog and ledger bytes stay unchanged.
 
 TODO(decision): `confirm` does not take the catalog lock; concurrent confirmation
 can overwrite an add/remove ledger change. Decide whether to serialize its
 catalog read, operator prompt and ledger write with that lock.
+
+Unknown-key refusals report a count and, only for keys in one profile whose
+name passes the plain-subject rule, `[networks.<name>]`. Unknown key names
+and unsafe profile names are never echoed.
 
 Unexpected internal failures map to `network_configuration_conflict` with the
 fixed detail `internal operation failed` (TODO(decision)); no extra code is

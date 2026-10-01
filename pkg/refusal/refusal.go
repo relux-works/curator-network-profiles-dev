@@ -139,10 +139,13 @@ func As(err error) (*Refusal, bool) {
 
 var plainSubject = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`)
 
+// PlainSubject reports whether s may appear verbatim as a diagnostic identifier.
+func PlainSubject(s string) bool { return plainSubject.MatchString(s) }
+
 // safeSubject keeps a well-formed identifier and replaces every other
 // subject with a fixed placeholder, so invalid names cannot leak credentials.
 func safeSubject(s string) string {
-	if plainSubject.MatchString(s) {
+	if PlainSubject(s) {
 		return s
 	}
 	return "<invalid name>"

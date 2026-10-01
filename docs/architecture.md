@@ -143,6 +143,10 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   leaves the catalog and backup untouched. If the subsequent catalog write
   fails, the stale entry stays deleted; retrying the add still needs `confirm`.
   Re-adding identical content never reuses an old confirmation.
+- CLI `remove` with an absent catalog and no stale confirmation refuses
+  without creating `.curator` or acquiring an edit lock. Stale entries still
+  require locked cleanup; removing a confirmed operator default refuses
+  without changing either the catalog or ledger.
 - CLI `remove` first reads and validates the ledger, then writes the catalog,
   then drops the entry and writes the ledger. A ledger read/validation failure
   leaves the catalog and backup untouched. These are two ordered atomic
@@ -166,8 +170,15 @@ The CLI prints `curator-network: <code>: <detail>` on stderr and exits 1; with
 `--json` it also prints `{"schema":"curator-network-error-v1","ok":false,
 "error":{"code","message","subject"}}` on stdout. Usage errors are not
 refusals: `curator-network: usage: <detail>` plus the synopsis, exit 2, no JSON.
-In usage diagnostics, operands and flag values are never echoed. The flag
-package's own output is suppressed; messages use only fixed phrases and known
+In usage diagnostics, operands and flag values are never echoed. This rule
+also covers the command vector in dry runs and real-exec diagnostics. Only a sanitized entrypoint is
+shown: `basename(argv[0])` when it passes the plain-subject rule
+(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$`), otherwise `<command>`. The binding's
+`adapter_identity.entrypoint` uses that same value. Human dry runs print
+`would exec <entrypoint> (+N args)`, where N excludes the entrypoint. JSON dry
+runs replace `command` with integer `argc` (including the entrypoint) and
+sanitized `entrypoint`; no command arguments or entrypoint directory appear.
+The flag package's own output is suppressed; messages use only fixed phrases and known
 flag names, such as `invalid value for flag -timeout`. Refusal subjects that
 fail the plain identifier rule become `<invalid name>` in both human and JSON
 errors.
@@ -185,6 +196,10 @@ errors.
 | `network_file_unreadable` (addition) | HOME unset; the catalog or the ledger exists but cannot be read or parsed; cannot read or write (including write, encode, directory or lock failures) | store, confirm, catalog | 1 |
 | `network_confirm_refused` (addition) | `confirm` under an agent-session marker, without a terminal, or answered with anything but `yes` | confirm.Guard, cli confirm | 1 |
 | usage (not a code) | bad verb, flag or operand; `exec` command not found or not executable | cli | 2 |
+
+Unknown-key refusals report a count and, only for keys in one profile whose
+name passes the plain-subject rule, `[networks.<name>]`. Unknown key names
+and unsafe profile names are never echoed.
 
 Unexpected non-refusal failures map to `network_configuration_conflict` with
 fixed detail `internal operation failed` (TODO(decision)); the CLI never emits

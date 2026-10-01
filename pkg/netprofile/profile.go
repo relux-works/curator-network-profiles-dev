@@ -463,16 +463,28 @@ func Parse(data []byte) (*File, error) {
 func classifyDecodeError(err error) error {
 	var strict *toml.StrictMissingError
 	if errors.As(err, &strict) {
-		keys := make([]string, 0, len(strict.Errors))
-		for i := range strict.Errors {
-			keys = append(keys, strings.Join(strict.Errors[i].Key(), "."))
+		// Never echo unknown keys: their names are untrusted file contents.
+		// Identify a single owning profile only under the plain-subject rule.
+		name := ""
+		for i, missing := range strict.Errors {
+			key := missing.Key()
+			if len(key) < 2 || key[0] != "networks" || !refusal.PlainSubject(key[1]) {
+				name = ""
+				break
+			}
+			if i == 0 {
+				name = key[1]
+			} else if name != key[1] {
+				name = ""
+				break
+			}
 		}
-		sort.Strings(keys)
-		subject := FileName
-		if len(keys) == 1 {
-			subject = subjectForKey(strict.Errors[0].Key())
+		subject, location := FileName, "catalog"
+		if name != "" {
+			subject, location = name, "[networks."+name+"]"
 		}
-		return refusal.New(refusal.CodeProfileInvalid, subject, "unknown key "+strings.Join(keys, ", "))
+		return refusal.New(refusal.CodeProfileInvalid, subject,
+			fmt.Sprintf("unknown key in %s (count: %d)", location, len(strict.Errors)))
 	}
 	var de *toml.DecodeError
 	if errors.As(err, &de) {

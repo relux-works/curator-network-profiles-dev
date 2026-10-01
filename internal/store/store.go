@@ -157,6 +157,9 @@ func (e *Editor) Add(prof netprofile.Profile) error {
 // profile defined in another TOML form is refused rather than guessed
 // at; the operator default cannot be removed while `default` names it.
 func Remove(p Paths, name string) error {
+	if _, err := os.Lstat(p.File); errors.Is(err, fs.ErrNotExist) {
+		return refusal.New(refusal.CodeProfileUnknown, name, "no such network profile on this machine")
+	}
 	return Edit(p, func(e *Editor) error { return e.Remove(name) })
 }
 

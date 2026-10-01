@@ -37,7 +37,7 @@ func TestErrorAndRecordDocumentation(t *testing.T) {
 func TestRound3Documentation(t *testing.T) {
 	for _, file := range []string{"spec/contract-appendix.md", "docs/architecture.md"} {
 		doc := repoFile(t, file)
-		for _, required := range []string{"operands and flag values are never echoed", "held catalog edit lock", "network.toml.lock", "no CLI cleanup", "TODO(decision)", "confirm` does not take the catalog lock"} {
+		for _, required := range []string{"operands and flag values are never echoed", "held catalog edit lock", "network.toml.lock", "no CLI cleanup", "TODO(decision)", "confirm` does not take the catalog lock", "integer `argc`", "otherwise `<command>`", "Unknown-key refusals report a count"} {
 			if !strings.Contains(doc, required) {
 				t.Errorf("%s lacks %q", file, required)
 			}

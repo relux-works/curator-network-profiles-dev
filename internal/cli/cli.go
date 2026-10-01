@@ -183,9 +183,16 @@ func (a *app) flagSet(verb string) *flag.FlagSet {
 }
 
 // parseInterspersed parses flags before and after positional operands
-// and returns the operands.
+// and returns the operands. The first -- ends flag parsing for the verb.
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
-	var positional []string
+	var positional, trailing []string
+	for i, arg := range args {
+		if arg == "--" {
+			trailing = args[i+1:]
+			args = args[:i]
+			break
+		}
+	}
 	rest := args
 	for {
 		if err := fs.Parse(rest); err != nil {
@@ -193,7 +200,7 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 		}
 		rest = fs.Args()
 		if len(rest) == 0 {
-			return positional, nil
+			return append(positional, trailing...), nil
 		}
 		positional = append(positional, rest[0])
 		rest = rest[1:]

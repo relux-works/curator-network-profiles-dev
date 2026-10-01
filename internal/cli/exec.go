@@ -14,6 +14,7 @@ import (
 	"github.com/relux-works/curator-network-profiles/pkg/envpatch"
 	"github.com/relux-works/curator-network-profiles/pkg/netprofile"
 	"github.com/relux-works/curator-network-profiles/pkg/probe"
+	"github.com/relux-works/curator-network-profiles/pkg/refusal"
 	"github.com/relux-works/curator-network-profiles/pkg/resolve"
 )
 
@@ -74,11 +75,15 @@ func (a *app) exec(args []string) int {
 			return a.fail(err)
 		}
 	}
+	entrypoint := filepath.Base(command[0])
+	if !refusal.PlainSubject(entrypoint) {
+		entrypoint = "<command>"
+	}
 	patch := envpatch.Generic{}.Patch(res.Profile)
 	b := binding.Binding{
 		ProfileRef:       res.Selection.ProfileRef,
 		ProfileDigest:    res.Digest,
-		AdapterIdentity:  binding.AdapterIdentity{Adapter: envpatch.AdapterGeneric, Harness: "exec", Build: "", Entrypoint: filepath.Base(command[0])},
+		AdapterIdentity:  binding.AdapterIdentity{Adapter: envpatch.AdapterGeneric, Harness: "exec", Build: "", Entrypoint: entrypoint},
 		Assurance:        res.Assurance,
 		ResolvedEndpoint: res.Profile.Endpoint,
 		EnvPatch:         patch,
@@ -88,17 +93,18 @@ func (a *app) exec(args []string) int {
 	if *dryRun {
 		if a.json {
 			a.emit(struct {
-				Schema  string         `json:"schema"`
-				OK      bool           `json:"ok"`
-				DryRun  bool           `json:"dry_run"`
-				Binding binding.Record `json:"binding"`
-				Patch   patchDoc       `json:"patch"`
-				Command []string       `json:"command"`
-			}{SchemaExec, true, true, record, patchDocOf(patch), command})
+				Schema     string         `json:"schema"`
+				OK         bool           `json:"ok"`
+				DryRun     bool           `json:"dry_run"`
+				Binding    binding.Record `json:"binding"`
+				Patch      patchDoc       `json:"patch"`
+				Argc       int            `json:"argc"`
+				Entrypoint string         `json:"entrypoint"`
+			}{SchemaExec, true, true, record, patchDocOf(patch), len(command), entrypoint})
 			return ExitOK
 		}
 		out := a.deps.Stdout
-		fmt.Fprintf(out, "dry run: would exec %s\n", strings.Join(command, " "))
+		fmt.Fprintf(out, "dry run: would exec %s (+%d args)\n", entrypoint, len(command)-1)
 		fmt.Fprintf(out, "binding record:\n")
 		fmt.Fprintf(out, "  profile_ref:      %s\n", record.ProfileRef)
 		fmt.Fprintf(out, "  profile_digest:   %s\n", record.ProfileDigest)

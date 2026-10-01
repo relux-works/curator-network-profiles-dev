@@ -66,6 +66,8 @@ func TestArgumentsNeverLeakInDiagnostics(t *testing.T) {
 		}
 	}
 	cases["exec missing command operand"] = []string{"exec", "egress-a", "--", secret}
+	cases["exec dry run entrypoint"] = []string{"exec", "egress-a", "--dry-run", "--", secret, "argument"}
+	cases["exec dry run argument"] = []string{"exec", "egress-a", "--dry-run", "--", "/private/pw/agent", secret}
 	for name, args := range cases {
 		for _, jsonMode := range []bool{false, true} {
 			t.Run(name+map[bool]string{false: " human", true: " json"}[jsonMode], func(t *testing.T) {
