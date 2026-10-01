@@ -10,6 +10,9 @@ import (
 	"github.com/relux-works/curator-network-profiles/pkg/refusal"
 )
 
+// SchemaRecord versions the manifest-safe binding record.
+const SchemaRecord = "relux-network-binding-record-v1"
+
 // Assurance levels. Slice A publishes cooperative only (spec N4).
 const (
 	AssuranceCooperative = "cooperative"
@@ -51,24 +54,41 @@ type ProbeRecord struct {
 // Record is the manifest-safe subset of a binding: never the
 // environment, never an endpoint, never a credential.
 type Record struct {
+	Schema          string          `json:"schema"`
 	ProfileRef      string          `json:"profile_ref"`
 	ProfileDigest   string          `json:"profile_digest"`
 	AdapterIdentity AdapterIdentity `json:"adapter_identity"`
 	Assurance       string          `json:"assurance"`
 	Origin          string          `json:"origin"`
-	Probe           *ProbeRecord    `json:"probe,omitempty"`
+	Probe           ProbeRecord     `json:"probe"`
 }
 
 // Record builds the manifest record of b with the selection origin and
 // the probe outcome of this launch.
 func (b Binding) Record(origin string, probe *ProbeRecord) Record {
+	pr := ProbeRecord{TCP: "skipped", Connect: "skipped", TLS: "skipped"}
+	if probe != nil {
+		pr = *probe
+	}
+	normalize := func(s string) string {
+		switch s {
+		case "":
+			return "skipped"
+		case "ok", "skipped", "failed":
+			return s
+		default:
+			return "failed"
+		}
+	}
+	pr.TCP, pr.Connect, pr.TLS = normalize(pr.TCP), normalize(pr.Connect), normalize(pr.TLS)
 	return Record{
+		Schema:          SchemaRecord,
 		ProfileRef:      b.ProfileRef,
 		ProfileDigest:   b.ProfileDigest,
 		AdapterIdentity: b.AdapterIdentity,
 		Assurance:       b.Assurance,
 		Origin:          origin,
-		Probe:           probe,
+		Probe:           pr,
 	}
 }
 

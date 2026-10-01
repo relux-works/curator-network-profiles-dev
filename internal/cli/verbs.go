@@ -229,18 +229,25 @@ func (a *app) remove(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	if err := store.Remove(paths, name); err != nil {
-		return a.fail(err)
-	}
-	ledger, err := confirm.Read(paths.Ledger)
+	dropped := false
+	err = store.Edit(paths, func(e *store.Editor) error {
+		// Validate the ledger before changing the catalog. These two atomic
+		// writes are ordered but not a cross-file transaction.
+		ledger, err := confirm.Read(paths.Ledger)
+		if err != nil {
+			return err
+		}
+		if err := e.Remove(name); err != nil {
+			return err
+		}
+		dropped = ledger.Delete(name)
+		if dropped {
+			return confirm.Write(paths.Ledger, ledger)
+		}
+		return nil
+	})
 	if err != nil {
 		return a.fail(err)
-	}
-	dropped := ledger.Delete(name)
-	if dropped {
-		if err := confirm.Write(paths.Ledger, ledger); err != nil {
-			return a.fail(err)
-		}
 	}
 	if a.json {
 		a.emit(struct {

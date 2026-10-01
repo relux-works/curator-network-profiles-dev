@@ -1,6 +1,54 @@
 {
   "schema": "relux-network-profiles-v1",
   "generator": "go run ./internal/contract/cmd/contract-vectors",
+  "record": [
+    {
+      "id": "R1",
+      "note": "a real preflight with a fixed observation time",
+      "record": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit",
+        "probe": {
+          "tcp": "ok",
+          "connect": "ok",
+          "tls": "ok",
+          "checked_at": "2026-10-01T12:00:00Z"
+        }
+      }
+    },
+    {
+      "id": "R2",
+      "note": "no probe supplied: all steps skipped and the time is zero",
+      "record": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
+      }
+    }
+  ],
   "digest": [
     {
       "id": "D1",
@@ -29,7 +77,9 @@
       "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
       "same_digest_as": [
         "D3",
-        "D5"
+        "D5",
+        "D6",
+        "D8"
       ]
     },
     {
@@ -86,7 +136,9 @@
       "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
       "same_digest_as": [
         "D1",
-        "D5"
+        "D5",
+        "D6",
+        "D8"
       ]
     },
     {
@@ -148,7 +200,99 @@
       "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
       "same_digest_as": [
         "D1",
-        "D3"
+        "D3",
+        "D6",
+        "D8"
+      ]
+    },
+    {
+      "id": "D6",
+      "note": "IPv4-mapped IPv6 is unmapped to canonical IPv4",
+      "name": "mapped",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://[::ffff:127.0.0.1]:18081",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+      "same_digest_as": [
+        "D1",
+        "D3",
+        "D5",
+        "D8"
+      ]
+    },
+    {
+      "id": "D7",
+      "note": "expanded IPv6 is compressed and bracketed",
+      "name": "ipv6",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://[0:0:0:0:0:0:0:1]:18081",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://[::1]:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://[::1]:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:211d7f846b669776c5cd02c8fbcfde1534090b58c7263be2d3f790cc817ada1a"
+    },
+    {
+      "id": "D8",
+      "note": "hexadecimal IPv4-mapped IPv6 also becomes IPv4",
+      "name": "mapped-hex",
+      "input": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://[::FFFF:7F00:1]:18081/",
+        "bypass_hosts": [
+          "localhost",
+          "127.0.0.1",
+          "::1"
+        ]
+      },
+      "normalized": {
+        "kind": "external-http-proxy",
+        "endpoint": "http://127.0.0.1:18081",
+        "bypass_hosts": [
+          "127.0.0.1",
+          "::1",
+          "localhost"
+        ],
+        "credential_mode": "none"
+      },
+      "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+      "same_digest_as": [
+        "D1",
+        "D3",
+        "D5",
+        "D6"
       ]
     }
   ],
@@ -326,6 +470,7 @@
       "id": "Q1",
       "note": "equal content under another name is the same binding",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -335,7 +480,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-a-copy",
@@ -357,6 +508,7 @@
       "id": "Q2",
       "note": "changed content under an unchanged name: resume is refused as drift, never re-routed",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -366,7 +518,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-a",
@@ -388,6 +546,7 @@
       "id": "Q3",
       "note": "a new assignment on a running host bound to another profile, no per-session route",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -397,7 +556,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-b",
@@ -419,6 +584,7 @@
       "id": "Q4",
       "note": "the same assignment when the adapter routes per session",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -428,7 +594,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-b",
@@ -450,6 +622,7 @@
       "id": "Q5",
       "note": "a different harness build is a different launch shape",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -459,7 +632,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-a",
@@ -481,6 +660,7 @@
       "id": "Q6",
       "note": "a fresh process never compares: new launch",
       "recorded": {
+        "schema": "relux-network-binding-record-v1",
         "profile_ref": "egress-a",
         "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
         "adapter_identity": {
@@ -490,7 +670,13 @@
           "entrypoint": "codex"
         },
         "assurance": "cooperative",
-        "origin": "explicit"
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
       },
       "fresh": {
         "profile_ref": "egress-b",

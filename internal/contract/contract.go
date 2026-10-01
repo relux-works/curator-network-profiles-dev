@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/relux-works/curator-network-profiles/pkg/binding"
 	"github.com/relux-works/curator-network-profiles/pkg/envpatch"
@@ -92,10 +93,18 @@ type EngineVector struct {
 	Refusal    string `json:"refusal,omitempty"`
 }
 
+// RecordVector shows the complete manifest-safe record.
+type RecordVector struct {
+	ID     string         `json:"id"`
+	Note   string         `json:"note"`
+	Record binding.Record `json:"record"`
+}
+
 // Set is every vector of the appendix.
 type Set struct {
 	Schema      string           `json:"schema"`
 	Generator   string           `json:"generator"`
+	Record      []RecordVector   `json:"record"`
 	Digest      []DigestVector   `json:"digest"`
 	EnvPatch    []EnvVector      `json:"envpatch"`
 	Equality    []EqualityVector `json:"equality"`
@@ -121,6 +130,9 @@ func Vectors() (Set, error) {
 		{"D3", "normalization: scheme and host case, trailing slash, whitespace, case and duplicates in bypass_hosts", "egress-a-alt", input{"external-http-proxy", "HTTP://127.0.0.1:18081/", []string{"LocalHost", "::1", " 127.0.0.1 ", "localhost"}, ""}},
 		{"D4", "a host-name endpoint, an engine host and a suffix entry in bypass_hosts", "corp", input{"external-http-proxy", "http://proxy.corp.invalid:3128", []string{"localhost", "127.0.0.1", "::1", "engine.local", ".corp.invalid"}, ""}},
 		{"D5", "the profile name and probe_target are not part of the digest", "egress-a-copy", input{"external-http-proxy", "http://127.0.0.1:18081", specBypass, "probe.invalid:443"}},
+		{"D6", "IPv4-mapped IPv6 is unmapped to canonical IPv4", "mapped", input{"external-http-proxy", "http://[::ffff:127.0.0.1]:18081", specBypass, ""}},
+		{"D7", "expanded IPv6 is compressed and bracketed", "ipv6", input{"external-http-proxy", "http://[0:0:0:0:0:0:0:1]:18081", specBypass, ""}},
+		{"D8", "hexadecimal IPv4-mapped IPv6 also becomes IPv4", "mapped-hex", input{"external-http-proxy", "http://[::FFFF:7F00:1]:18081/", specBypass, ""}},
 	}
 	for _, d := range digestIn {
 		p, err := netprofile.Normalize(d.name, netprofile.Input{Kind: d.in.Kind, Endpoint: d.in.Endpoint, BypassHosts: d.in.BypassHosts, ProbeTarget: d.in.ProbeTarget})
@@ -167,7 +179,12 @@ func Vectors() (Set, error) {
 		s.EnvPatch = append(s.EnvPatch, EnvVector{ID: e.id, Note: e.note, Profile: e.profile, Env: e.env, Result: patchOf(e.profile).Apply(e.env)})
 	}
 
-	recordA := binding.Binding{ProfileRef: "egress-a", ProfileDigest: s.Digest[0].Digest, AdapterIdentity: identity, Assurance: binding.AssuranceCooperative}.Record("explicit", nil)
+	boundA := binding.Binding{ProfileRef: "egress-a", ProfileDigest: s.Digest[0].Digest, AdapterIdentity: identity, Assurance: binding.AssuranceCooperative}
+	recordA := boundA.Record("explicit", nil)
+	s.Record = []RecordVector{
+		{"R1", "a real preflight with a fixed observation time", boundA.Record("explicit", &binding.ProbeRecord{TCP: "ok", Connect: "ok", TLS: "ok", CheckedAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)})},
+		{"R2", "no probe supplied: all steps skipped and the time is zero", recordA},
+	}
 	eqIn := []struct {
 		id, note string
 		fresh    fresh
@@ -253,6 +270,11 @@ func (s Set) Blocks() ([]Block, error) {
 		}
 	}
 	for _, v := range s.EnvPatch {
+		if err := add(v.ID, v); err != nil {
+			return nil, err
+		}
+	}
+	for _, v := range s.Record {
 		if err := add(v.ID, v); err != nil {
 			return nil, err
 		}

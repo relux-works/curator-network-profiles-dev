@@ -27,8 +27,16 @@ func EnsureDir(dir string) error {
 	return os.MkdirAll(dir, 0o700)
 }
 
-// Write replaces path with data atomically, mode 0600.
+// Write replaces path with data atomically, mode 0600. A symlink destination
+// is refused rather than silently replaced or followed.
 func Write(path string, data []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("cannot replace a symlink")
+	}
 	dir := filepath.Dir(path)
 	if err := EnsureDir(dir); err != nil {
 		return err

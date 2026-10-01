@@ -81,6 +81,45 @@ func Read(p Paths) (*netprofile.File, []byte, error) {
 // validated before it is written; the previous bytes go to the backup.
 // An existing name is refused (no silent overwrite).
 func Add(p Paths, prof netprofile.Profile) error {
+	return Edit(p, func(e *Editor) error { return e.Add(prof) })
+}
+
+// Editor performs catalog edits while Edit holds the advisory lock.
+// It must only be used inside the callback and never concurrently.
+type Editor struct{ paths Paths }
+
+// Edit holds network.toml.lock across a catalog read/edit/write and any
+// related ledger operations in the callback. Contention refuses immediately;
+// a stale lock is never removed automatically. Cleanup runs on every return.
+func Edit(p Paths, fn func(*Editor) error) error {
+	if err := atomicfile.EnsureDir(p.Dir); err != nil {
+		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot create catalog directory")
+	}
+	lockPath := p.File + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return refusal.New(refusal.CodeConfigurationConflict, netprofile.FileName, "catalog edit is locked; retry after the other edit finishes")
+	}
+	if err != nil {
+		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot create edit lock")
+	}
+	defer os.Remove(lockPath)
+	if err := lock.Close(); err != nil {
+		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot close edit lock")
+	}
+	info, err := os.Lstat(p.File)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot inspect catalog")
+	}
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot edit a symlink catalog; edit its target explicitly")
+	}
+	return fn(&Editor{paths: p})
+}
+
+// Add appends a profile under the lock held by Edit.
+func (e *Editor) Add(prof netprofile.Profile) error {
+	p := e.paths
 	existing, data, err := Read(p)
 	if err != nil {
 		return err
@@ -112,11 +151,18 @@ func Add(p Paths, prof netprofile.Profile) error {
 	return write(p, out, data != nil)
 }
 
-// Remove deletes the `[networks.<name>]` header line through the line
-// before the next table header (or EOF), keeping every other byte. A
+// Remove deletes the table's contiguous leading comments, header and body
+// through its last non-blank, non-comment line. Trailing comments and blank
+// lines before the next header or EOF are preserved byte for byte. A
 // profile defined in another TOML form is refused rather than guessed
 // at; the operator default cannot be removed while `default` names it.
 func Remove(p Paths, name string) error {
+	return Edit(p, func(e *Editor) error { return e.Remove(name) })
+}
+
+// Remove deletes a profile under the lock held by Edit.
+func (e *Editor) Remove(name string) error {
+	p := e.paths
 	existing, data, err := Read(p)
 	if err != nil {
 		return err
@@ -145,6 +191,18 @@ func Remove(p Paths, name string) error {
 			end = i
 			break
 		}
+	}
+	// Keep the next table's leading comments and all trailing spacing.
+	for end > start+1 {
+		line := strings.TrimSpace(lines[end-1])
+		if line != "" && !strings.HasPrefix(line, "#") {
+			break
+		}
+		end--
+	}
+	// Only directly adjacent comments belong to this header.
+	for start > 0 && strings.HasPrefix(strings.TrimSpace(lines[start-1]), "#") {
+		start--
 	}
 	var out []byte
 	for _, line := range lines[:start] {

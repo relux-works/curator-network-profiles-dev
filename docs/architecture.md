@@ -74,8 +74,13 @@ test (two concurrent launches through two egresses, real binaries) is
  (caller) spawn / syscall.Exec            ──► no fallback to direct on any failure
    │
    ▼
- binding.Record{profile_ref, profile_digest, adapter_identity, assurance, origin, probe}  → manifests, logs
+ binding.Record{schema, profile_ref, profile_digest, adapter_identity, assurance, origin, probe}  → manifests, logs
 ```
+
+A plan or dry run skips the probe arrow entirely and records all probe steps
+as `skipped`. A managed Record always has schema
+`relux-network-binding-record-v1` and a non-null `probe` object. An absent
+`network` manifest key means unmanaged (appendix §3.4).
 
 The library stops at the patch. The host that creates the process applies it to
 that process's private environment; nothing is exported, no shell profile, no
@@ -100,19 +105,45 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   key `[networks."vpn.eu"]` because TOML would otherwise nest tables.
 - Endpoint: `http://host:port` only, explicit port, no userinfo (the value is
   never echoed), no path but `/`, no query or fragment; lowercased; IPv6 in
-  brackets. `bypass_hosts` must contain `localhost`, `127.0.0.1`, `::1`; entries
-  are trimmed, lowercased, deduplicated, sorted; `*`, empty, commas and
+  brackets; IP literals are canonicalized with `netip`, and IPv4-mapped IPv6
+  is unmapped to IPv4. `bypass_hosts` must contain `localhost`, `127.0.0.1`,
+  `::1`; entries are trimmed, lowercased, deduplicated, sorted; `*`, empty, commas and
   whitespace are refused.
 - The file is valid as a whole or refused as a whole. Absent = no profiles
   (a selection is `network_profile_unknown`; no selection is `unmanaged`).
   Unreadable or unparsable = every selection refused, including "no selection"
   (the operator default cannot be known): a read failure is never headroom.
-- `add` appends a block at the end and `remove` deletes from the table header
-  to the line before the next header; every other byte is preserved. The
-  result is parsed and validated before writing; the write is temp + fsync +
-  rename with mode 0600, the previous bytes go to `network.toml.bak`, and the
-  directory is created 0700 when absent (an existing `~/.curator` keeps its
-  mode: it is shared with other Curator files).
+- `add` appends a block at the end. The removed block is the table's own
+  leading comment block (contiguous `#` lines directly above its header,
+  no blank line in between), its header, and its body up to the last non-blank,
+  non-comment line before the next header or EOF. Comments and blank lines
+  that precede the next header (or trail at EOF) stay; every other byte stays.
+  The result is parsed and validated before writing; the write is temp +
+  fsync + rename with mode 0600, the previous bytes go to `network.toml.bak`,
+  and the directory is created 0700 when absent (an existing `~/.curator`
+  keeps its mode: it is shared with other Curator files).
+- Edits refuse a symlinked catalog before reading or backing it up; atomic
+  writes also refuse symlink destinations, including backups and ledgers.
+  Read-only catalog loads may follow symlinks. Refusal never replaces the
+  link or modifies its target.
+- `store.Edit` holds the advisory `network.toml.lock` (O_CREATE|O_EXCL,
+  0600) across catalog read/edit/write and the CLI remove's ledger operations.
+  `Add`/`Remove` use this same lock. Contention refuses immediately as
+  `network_configuration_conflict`; every normal return removes the acquired
+  lock. A crash may leave a stale lock: after checking no edit is running,
+  the operator removes it explicitly. Manual edits and separate `confirm`
+  operations do not participate in this advisory lock.
+- CLI `remove` first reads and validates the ledger, then writes the catalog,
+  then drops the entry and writes the ledger. A ledger read/validation failure
+  leaves the catalog and backup untouched. These are two ordered atomic
+  writes, not a cross-file transaction: if the ledger write fails, removal
+  remains applied, its old entry remains in the ledger, and the CLI exits 1
+  with `network_file_unreadable`. An absent profile cannot launch; the backup
+  contains the prior catalog. After correcting the write failure, the operator
+  must delete the stale ledger entry explicitly; retrying `remove` of the
+  already absent profile returns `network_profile_unknown`. The stale entry
+  cannot authorize a missing profile, but a later re-add with the identical
+  digest could match it, so cleanup must precede that re-add.
 
 `~/.curator/network.confirmations.json` (`relux-network-confirmations-v1`) maps
 a profile name to the digest it was confirmed at and when. A profile whose
@@ -137,9 +168,14 @@ refusals: `curator-network: usage: <detail>` plus the synopsis, exit 2, no JSON.
 | `network_proxy_auth_failed` | CONNECT answered 407 | probe | 1 |
 | `network_profile_drift` | resume of an existing run: same profile name, different digest | binding.CheckReattach | 1 |
 | `network_profile_invalid` (addition) | malformed content: unknown key, wrong schema, bad endpoint, missing required bypass, dangling `default`, an edit that does not round-trip | netprofile.Parse, store | 1 |
-| `network_file_unreadable` (addition) | HOME unset; the catalog or the ledger exists but cannot be read or parsed; a write failed | store, confirm, catalog | 1 |
+| `network_file_unreadable` (addition) | HOME unset; the catalog or the ledger exists but cannot be read or parsed; cannot read or write (including write, encode, directory or lock failures) | store, confirm, catalog | 1 |
 | `network_confirm_refused` (addition) | `confirm` under an agent-session marker, without a terminal, or answered with anything but `yes` | confirm.Guard, cli confirm | 1 |
 | usage (not a code) | bad verb, flag or operand; `exec` command not found or not executable | cli | 2 |
+
+Unexpected non-refusal failures map to `network_configuration_conflict` with
+fixed detail `internal operation failed` (TODO(decision)); the CLI never emits
+an unlisted `internal` code or raw Go errors. TOML type errors carry only
+`<key>: wrong type`; syntax errors carry only `syntax error at line N`.
 
 The literal of every code is pinned by `pkg/refusal` tests; the appendix lists
 the same set and the drift guard checks it.
@@ -159,7 +195,7 @@ document `curator-network-<verb>-v1` on success.
 | `remove <name>` | no | catalog, ledger | narrowing, applies at once; drops the ledger entry |
 | `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | only with `--probe` | no | without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
 | `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes` |
-| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | preflight | no | resolve → validate → preflight (TCP always; CONNECT+TLS when `probe_target` is set) → bind → `Apply` → `syscall.Exec`; `--dry-run` prints the Record and the patch instead; the command is resolved through `PATH` of the inherited environment (the patch never changes `PATH`) |
+| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (TCP always; CONNECT+TLS with `probe_target`) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH` |
 
 `Deps` is the only boundary: production main wires `os.Environ()`, the standard
 streams, the char-device test on stdin, `syscall.Exec`, `probe.Dialer` and
@@ -246,3 +282,6 @@ muse's closed allowlist is such an adapter, not a change to the generic one.
     2026-09-24).
 12. No LICENSE file: the Relux Community License 1.0 waits on a completed
     Adoption Notice (wiki decisions, 2026-09-24).
+13. Unexpected internal failures use the existing `network_configuration_conflict`
+    code with a fixed sanitized detail instead of extending the closed set.
+    `network_file_unreadable` covers cannot read or write, not just reads.

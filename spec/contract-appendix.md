@@ -25,7 +25,7 @@ A profile is normalized before anything else looks at it:
 | --- | --- |
 | name | `^[a-z0-9][a-z0-9._-]{0,62}$`; the catalog key; **not** digested |
 | `kind` | `external-http-proxy` (the only kind of this version) |
-| `endpoint` | `http://host:port`: scheme `http`, explicit numeric port 1–65535, no userinfo, no path but `/`, no query, no fragment; scheme and host lowercased, IPv6 host in brackets, trailing `/` dropped |
+| `endpoint` | `http://host:port`: scheme `http`, explicit numeric port 1–65535, no userinfo, no path but `/`, no query, no fragment; scheme and host lowercased, IP literals canonicalized with `netip`, IPv4-mapped IPv6 unmapped to IPv4, IPv6 host in brackets, trailing `/` dropped |
 | `bypass_hosts` | each entry trimmed and lowercased; deduplicated; sorted in byte order; MUST contain `127.0.0.1`, `::1`, `localhost`; an empty entry, `*`, a comma or whitespace inside an entry, or a character outside `[a-z0-9._:[]/-]` is refused |
 | `credential_mode` | `none` (the only mode of this version; a credential in the endpoint is refused without being echoed) |
 | `probe_target` | optional `host:port`; **not** digested |
@@ -53,7 +53,7 @@ profile_digest = "sha256:" + lowercase-hex( SHA-256( canonical bytes ) )
 
 ### 1.4 Vectors
 
-**D1** — the specification's egress-a. Same digest as D3, D5.
+**D1** — the specification's egress-a. Same digest as D3, D5, D6, D8.
 
 Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://127.0.0.1:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
 
@@ -87,7 +87,9 @@ Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699
   "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
   "same_digest_as": [
     "D3",
-    "D5"
+    "D5",
+    "D6",
+    "D8"
   ]
 }
 ```
@@ -127,7 +129,7 @@ Digest: `sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328
 }
 ```
 
-**D3** — normalization: scheme and host case, trailing slash, whitespace, case and duplicates in bypass_hosts. Same digest as D1, D5.
+**D3** — normalization: scheme and host case, trailing slash, whitespace, case and duplicates in bypass_hosts. Same digest as D1, D5, D6, D8.
 
 Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://127.0.0.1:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
 
@@ -162,7 +164,9 @@ Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699
   "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
   "same_digest_as": [
     "D1",
-    "D5"
+    "D5",
+    "D6",
+    "D8"
   ]
 }
 ```
@@ -206,7 +210,7 @@ Digest: `sha256:e14a1b4ea4e09ab7ee87cbe3e2c40ff100ff2185b39c36d754e9777a5690d88a
 }
 ```
 
-**D5** — the profile name and probe_target are not part of the digest. Same digest as D1, D3.
+**D5** — the profile name and probe_target are not part of the digest. Same digest as D1, D3, D6, D8.
 
 Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://127.0.0.1:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
 
@@ -242,7 +246,126 @@ Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699
   "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
   "same_digest_as": [
     "D1",
-    "D3"
+    "D3",
+    "D6",
+    "D8"
+  ]
+}
+```
+
+**D6** — IPv4-mapped IPv6 is unmapped to canonical IPv4.
+
+Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://127.0.0.1:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
+
+Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699`
+
+```json vector=D6
+{
+  "id": "D6",
+  "note": "IPv4-mapped IPv6 is unmapped to canonical IPv4",
+  "name": "mapped",
+  "input": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://[::ffff:127.0.0.1]:18081",
+    "bypass_hosts": [
+      "localhost",
+      "127.0.0.1",
+      "::1"
+    ]
+  },
+  "normalized": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://127.0.0.1:18081",
+    "bypass_hosts": [
+      "127.0.0.1",
+      "::1",
+      "localhost"
+    ],
+    "credential_mode": "none"
+  },
+  "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+  "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+  "same_digest_as": [
+    "D1",
+    "D3",
+    "D5",
+    "D8"
+  ]
+}
+```
+
+**D7** — expanded IPv6 is compressed and bracketed.
+
+Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://[::1]:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
+
+Digest: `sha256:211d7f846b669776c5cd02c8fbcfde1534090b58c7263be2d3f790cc817ada1a`
+
+```json vector=D7
+{
+  "id": "D7",
+  "note": "expanded IPv6 is compressed and bracketed",
+  "name": "ipv6",
+  "input": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://[0:0:0:0:0:0:0:1]:18081",
+    "bypass_hosts": [
+      "localhost",
+      "127.0.0.1",
+      "::1"
+    ]
+  },
+  "normalized": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://[::1]:18081",
+    "bypass_hosts": [
+      "127.0.0.1",
+      "::1",
+      "localhost"
+    ],
+    "credential_mode": "none"
+  },
+  "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://[::1]:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+  "digest": "sha256:211d7f846b669776c5cd02c8fbcfde1534090b58c7263be2d3f790cc817ada1a"
+}
+```
+
+**D8** — hexadecimal IPv4-mapped IPv6 also becomes IPv4.
+
+Canonical bytes: `{"bypass_hosts":["127.0.0.1","::1","localhost"],"credential_mode":"none","endpoint":"http://127.0.0.1:18081","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}`
+
+Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699`
+
+```json vector=D8
+{
+  "id": "D8",
+  "note": "hexadecimal IPv4-mapped IPv6 also becomes IPv4",
+  "name": "mapped-hex",
+  "input": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://[::FFFF:7F00:1]:18081/",
+    "bypass_hosts": [
+      "localhost",
+      "127.0.0.1",
+      "::1"
+    ]
+  },
+  "normalized": {
+    "kind": "external-http-proxy",
+    "endpoint": "http://127.0.0.1:18081",
+    "bypass_hosts": [
+      "127.0.0.1",
+      "::1",
+      "localhost"
+    ],
+    "credential_mode": "none"
+  },
+  "canonical": "{\"bypass_hosts\":[\"127.0.0.1\",\"::1\",\"localhost\"],\"credential_mode\":\"none\",\"endpoint\":\"http://127.0.0.1:18081\",\"kind\":\"external-http-proxy\",\"schema\":\"relux-network-profiles-v1\"}",
+  "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+  "same_digest_as": [
+    "D1",
+    "D3",
+    "D5",
+    "D6"
   ]
 }
 ```
@@ -544,13 +667,78 @@ their time, lease id, generation. An empty digest is never equal to anything.
 What run manifests and logs keep:
 
 ```text
-{profile_ref, profile_digest, adapter_identity{adapter, harness, build, entrypoint},
+{schema, profile_ref, profile_digest, adapter_identity{adapter, harness, build, entrypoint},
  assurance, origin, probe{tcp, connect, tls, checked_at}}
 ```
 
 `origin` is `explicit`, `runtime-default`, `project-default` or
-`operator-default`. `probe.*` is `ok`, `failed` or `skipped`. The Record MUST
-NOT carry the environment, the patch, an endpoint or a credential.
+`operator-default`. `schema` MUST be `relux-network-binding-record-v1`
+(`binding.SchemaRecord`, set by `Binding.Record`). Every listed field MUST be
+present; `probe` MUST be a non-null object, including in plans and dry runs.
+Each of `probe.tcp`, `probe.connect`, `probe.tls` is `ok`, `skipped` or `failed`;
+`checked_at` is an RFC3339 timestamp. Plans and dry runs skip the preflight and
+record all three steps as `skipped`, with their plan time. `Record(origin, nil)`
+records all steps as `skipped` and the zero time `0001-01-01T00:00:00Z` for an
+unobserved probe. Empty supplied statuses become `skipped`; unknown supplied
+statuses become `failed`. The supplied probe is copied, so subsequent caller
+mutation cannot change the Record.
+
+An absent `network` key in a manifest = unmanaged. The Record MUST NOT carry
+the environment, the patch, an endpoint or a credential.
+
+Generated Record vectors (R1: observed; R2: unobserved) follow.
+
+```json vector=R1
+{
+  "id": "R1",
+  "note": "a real preflight with a fixed observation time",
+  "record": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "egress-a",
+    "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "explicit",
+    "probe": {
+      "tcp": "ok",
+      "connect": "ok",
+      "tls": "ok",
+      "checked_at": "2026-10-01T12:00:00Z"
+    }
+  }
+}
+```
+
+```json vector=R2
+{
+  "id": "R2",
+  "note": "no probe supplied: all steps skipped and the time is zero",
+  "record": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "egress-a",
+    "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
+  }
+}
+```
 
 ### 3.5 Reattach and resume (spec N7)
 
@@ -579,6 +767,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q1",
   "note": "equal content under another name is the same binding",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -588,7 +777,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-a-copy",
@@ -615,6 +810,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q2",
   "note": "changed content under an unchanged name: resume is refused as drift, never re-routed",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -624,7 +820,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-a",
@@ -651,6 +853,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q3",
   "note": "a new assignment on a running host bound to another profile, no per-session route",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -660,7 +863,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-b",
@@ -687,6 +896,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q4",
   "note": "the same assignment when the adapter routes per session",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -696,7 +906,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-b",
@@ -723,6 +939,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q5",
   "note": "a different harness build is a different launch shape",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -732,7 +949,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-a",
@@ -759,6 +982,7 @@ Missing or denied profiles are decided by resolve before this table.
   "id": "Q6",
   "note": "a fresh process never compares: new launch",
   "recorded": {
+    "schema": "relux-network-binding-record-v1",
     "profile_ref": "egress-a",
     "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
     "adapter_identity": {
@@ -768,7 +992,13 @@ Missing or denied profiles are decided by resolve before this table.
       "entrypoint": "codex"
     },
     "assurance": "cooperative",
-    "origin": "explicit"
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
   },
   "fresh": {
     "profile_ref": "egress-b",
@@ -874,10 +1104,22 @@ them and prints `curator-network: <code>: <detail>`.
 | `network_proxy_auth_failed` | CONNECT answered 407 |
 | `network_profile_drift` | resume of an existing run under the same profile name with a different digest |
 | `network_profile_invalid` | malformed catalog content (addition, TODO(decision)) |
-| `network_file_unreadable` | HOME unset, or a catalog or ledger that exists but cannot be read or parsed (addition, TODO(decision)) |
+| `network_file_unreadable` | cannot read or write a catalog, backup or ledger; HOME unset; parse, encode, directory or lock creation failure (addition, TODO(decision)) |
 | `network_confirm_refused` | `confirm` inside an agent session, without a terminal, or not answered `yes` (addition, TODO(decision)) |
 
 Usage errors are not refusals (exit 2).
+
+Unexpected internal failures map to `network_configuration_conflict` with the
+fixed detail `internal operation failed` (TODO(decision)); no extra code is
+emitted. TOML type and syntax errors expose fixed phrases and key/line metadata,
+never decoder type names or content values.
+
+### 5.1 Version JSON document
+
+`--version --json`, `--json --version`, `-V --json` and `version --json` all
+produce `curator-network-version-v1`. Its required fields are `schema` (that
+literal), `ok` (true), `name` (`curator-network`), `version` (string), `revision`
+(string), `dirty` (boolean), and `contract` (`relux-network-profiles-v1`).
 
 ## 6. Regeneration
 

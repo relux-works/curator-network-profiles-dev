@@ -117,19 +117,29 @@ func Run(ctx context.Context, args []string, deps Deps) int {
 	}
 	a := &app{ctx: ctx, deps: deps}
 
+	versionFlag, helpFlag := false, false
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "--json":
 			a.json = true
 		case "--version", "-V":
-			return a.version()
+			versionFlag = true
 		case "--help", "-h", "help":
-			fmt.Fprint(deps.Stdout, Usage)
-			return ExitOK
+			helpFlag = true
 		default:
 			return a.usage("unknown option " + args[0])
 		}
 		args = args[1:]
+	}
+	if helpFlag {
+		fmt.Fprint(deps.Stdout, Usage)
+		return ExitOK
+	}
+	if versionFlag {
+		if len(args) != 0 {
+			return a.usage("--version: unexpected operand")
+		}
+		return a.version()
 	}
 	if len(args) == 0 {
 		return a.usage("a verb is required")
@@ -137,6 +147,9 @@ func Run(ctx context.Context, args []string, deps Deps) int {
 	verb, rest := args[0], args[1:]
 	switch verb {
 	case "version":
+		if _, code, ok := a.operands(a.flagSet("version"), rest, 0, 0); !ok {
+			return code
+		}
 		return a.version()
 	case "help":
 		fmt.Fprint(deps.Stdout, Usage)
@@ -223,7 +236,10 @@ func bodyOf(err error) errorBody {
 	if r, ok := refusal.As(err); ok {
 		return errorBody{Code: r.Code, Message: r.Error(), Subject: r.Subject}
 	}
-	return errorBody{Code: "internal", Message: err.Error()}
+	// TODO(decision): unexpected internal failures use the existing conflict
+	// code; no implementation detail or new code crosses the boundary.
+	r := refusal.New(refusal.CodeConfigurationConflict, "", "internal operation failed")
+	return errorBody{Code: r.Code, Message: r.Error(), Subject: r.Subject}
 }
 
 // fail reports a refusal on stderr (and as a JSON document on stdout

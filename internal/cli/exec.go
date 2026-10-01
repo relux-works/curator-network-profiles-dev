@@ -12,6 +12,7 @@ import (
 	"github.com/relux-works/curator-network-profiles/pkg/binding"
 	"github.com/relux-works/curator-network-profiles/pkg/catalog"
 	"github.com/relux-works/curator-network-profiles/pkg/envpatch"
+	"github.com/relux-works/curator-network-profiles/pkg/netprofile"
 	"github.com/relux-works/curator-network-profiles/pkg/probe"
 	"github.com/relux-works/curator-network-profiles/pkg/resolve"
 )
@@ -21,7 +22,8 @@ import (
 // Apply to the inherited environment → Deps.Exec. Any failure refuses
 // before exec; there is no fallback to direct. The command is resolved
 // through PATH of the inherited (unpatched) environment; the patch only
-// touches proxy variables, so both are the same PATH.
+// touches proxy variables, so both are the same PATH. Dry runs skip lookup
+// and preflight, and record all probe steps as skipped.
 func (a *app) exec(args []string) int {
 	sep := -1
 	for i, arg := range args {
@@ -45,6 +47,9 @@ func (a *app) exec(args []string) int {
 		return code
 	}
 	name := pos[0]
+	if err := netprofile.ValidateName(name); err != nil {
+		return a.usage("exec: invalid network profile name")
+	}
 
 	cat, err := catalog.Load(a.deps.Env)
 	if err != nil {
@@ -54,9 +59,20 @@ func (a *app) exec(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	pr, err := a.deps.Prober.Probe(a.ctx, probe.Request{Subject: name, Endpoint: res.Profile.Endpoint, Target: res.Profile.ProbeTarget, Timeout: *timeout})
-	if err != nil {
-		return a.fail(err)
+	if !res.Managed || res.Selection.Origin != resolve.OriginExplicit {
+		return a.usage("exec: an explicit managed network profile is required")
+	}
+	pr := probe.Result{TCP: probe.StatusSkipped, Connect: probe.StatusSkipped, TLS: probe.StatusSkipped, CheckedAt: a.deps.Now()}
+	var path string
+	if !*dryRun {
+		path, err = lookPath(command[0], a.deps.Env)
+		if err != nil {
+			return a.usage("exec: " + err.Error())
+		}
+		pr, err = a.deps.Prober.Probe(a.ctx, probe.Request{Subject: name, Endpoint: res.Profile.Endpoint, Target: res.Profile.ProbeTarget, Timeout: *timeout})
+		if err != nil {
+			return a.fail(err)
+		}
 	}
 	patch := envpatch.Generic{}.Patch(res.Profile)
 	b := binding.Binding{
@@ -98,10 +114,6 @@ func (a *app) exec(args []string) int {
 		return ExitOK
 	}
 
-	path, err := lookPath(command[0], a.deps.Env)
-	if err != nil {
-		return a.usage("exec: " + err.Error())
-	}
 	env := patch.Apply(a.deps.Env)
 	fmt.Fprintf(a.deps.Stderr, "%s: network=%s digest=%s adapter=%s preflight=tcp %s, connect %s, tls %s\n",
 		Name, record.ProfileRef, record.ProfileDigest, record.AdapterIdentity.Adapter, pr.TCP, pr.Connect, pr.TLS)

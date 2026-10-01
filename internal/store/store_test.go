@@ -220,7 +220,7 @@ func TestRemovePreservesEverythingElse(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ = os.ReadFile(p.File)
-	want = "# operator notes stay\nschema = \"relux-network-profiles-v1\"   # trailing comment\n\n[networks.egress-b]\nkind         = \"external-http-proxy\"\nendpoint     = \"http://127.0.0.1:18082\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n"
+	want = "# operator notes stay\nschema = \"relux-network-profiles-v1\"   # trailing comment\n\n\n# a comment between tables\n\n[networks.egress-b]\nkind         = \"external-http-proxy\"\nendpoint     = \"http://127.0.0.1:18082\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n"
 	if string(data) != want {
 		t.Fatalf("after removing the first table =\n%q\nwant\n%q", data, want)
 	}

@@ -59,7 +59,7 @@ func TestVectorSetShape(t *testing.T) {
 	if byID["D1"].Digest != byID["D3"].Digest || byID["D1"].Digest != byID["D5"].Digest || byID["D1"].Digest == byID["D2"].Digest || byID["D1"].Digest == byID["D4"].Digest {
 		t.Fatal("digest relations between D1..D5 are not the documented ones")
 	}
-	if strings.Join(byID["D1"].SameAs, ",") != "D3,D5" {
+	if strings.Join(byID["D1"].SameAs, ",") != "D3,D5,D6,D8" {
 		t.Fatalf("D1 same_digest_as = %v", byID["D1"].SameAs)
 	}
 	for _, q := range set.Equality {

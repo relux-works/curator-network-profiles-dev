@@ -78,12 +78,31 @@ func TestRecordIsManifestSafe(t *testing.T) {
 			t.Fatalf("record leaks %q: %s", forbidden, s)
 		}
 	}
-	want := `{"profile_ref":"egress-a","profile_digest":"` + digest + `","adapter_identity":{"adapter":"generic-env-v1","harness":"exec","build":"","entrypoint":"codex"},"assurance":"cooperative","origin":"runtime-default","probe":{"tcp":"ok","connect":"skipped","tls":"skipped","checked_at":"2026-10-01T12:00:00Z"}}`
+	want := `{"schema":"relux-network-binding-record-v1","profile_ref":"egress-a","profile_digest":"` + digest + `","adapter_identity":{"adapter":"generic-env-v1","harness":"exec","build":"","entrypoint":"codex"},"assurance":"cooperative","origin":"runtime-default","probe":{"tcp":"ok","connect":"skipped","tls":"skipped","checked_at":"2026-10-01T12:00:00Z"}}`
 	if s != want {
 		t.Fatalf("record JSON =\n%s\nwant\n%s", s, want)
 	}
-	if raw2, _ := json.Marshal(b.Record("explicit", nil)); strings.Contains(string(raw2), "probe") {
-		t.Fatal("nil probe rendered")
+	for _, input := range []*binding.ProbeRecord{nil, {}, {TCP: "bogus", Connect: "ok", TLS: "failed", CheckedAt: at}} {
+		raw2, _ := json.Marshal(b.Record("explicit", input))
+		var doc map[string]any
+		if err := json.Unmarshal(raw2, &doc); err != nil {
+			t.Fatal(err)
+		}
+		if doc["schema"] != "relux-network-binding-record-v1" {
+			t.Fatalf("schema missing: %s", raw2)
+		}
+		pr, ok := doc["probe"].(map[string]any)
+		if !ok {
+			t.Fatalf("probe missing: %s", raw2)
+		}
+		for _, key := range []string{"tcp", "connect", "tls"} {
+			if pr[key] != "ok" && pr[key] != "skipped" && pr[key] != "failed" {
+				t.Fatalf("bad %s: %s", key, raw2)
+			}
+		}
+		if _, ok := pr["checked_at"].(string); !ok {
+			t.Fatalf("checked_at missing: %s", raw2)
+		}
 	}
 }
 
@@ -129,5 +148,19 @@ func TestCheckReattachTable(t *testing.T) {
 				t.Fatalf("subject missing: %v", err)
 			}
 		})
+	}
+}
+
+func TestRecordCopiesProbe(t *testing.T) {
+	t.Parallel()
+	input := &binding.ProbeRecord{TCP: "ok", Connect: "skipped", TLS: "skipped"}
+	rec := bind("egress-a", digest, idA, "cooperative").Record("explicit", input)
+	input.TCP = "failed"
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"tcp":"ok"`) {
+		t.Fatalf("record changed after caller mutation: %s", raw)
 	}
 }

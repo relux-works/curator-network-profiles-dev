@@ -36,7 +36,7 @@ const (
 //     missing schema); a refusal is needed because a malformed catalog
 //     refuses every selection and "invalid" is not "unknown".
 //   - CodeFileUnreadable: TODO(decision) the spec has no code for a
-//     catalog that exists but cannot be read or parsed; a read failure
+//     catalog or ledger that cannot be read, parsed, encoded or written; a read failure
 //     is never headroom, so it needs its own code distinct from
 //     "unknown" (absent) and "invalid" (well-formed but wrong).
 //   - CodeConfirmRefused: TODO(decision) the spec says `confirm` refuses

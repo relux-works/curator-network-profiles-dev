@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"sort"
@@ -178,7 +179,8 @@ func Normalize(name string, in Input) (Profile, error) {
 // explicit numeric port, no userinfo (credential mode is none; the value
 // is never echoed), no path other than empty or "/", no query, no
 // fragment. The scheme and host are lowercased, an IPv6 host is
-// bracketed and a trailing "/" is dropped. Errors are plain phrases.
+// bracketed and a trailing "/" is dropped. IP literals use netip canonical
+// spelling; IPv4-mapped IPv6 is unmapped to IPv4. Errors are plain phrases.
 func NormalizeEndpoint(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -217,14 +219,15 @@ func NormalizeEndpoint(raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.To4() == nil {
-			host = "[" + host + "]"
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if ip.Zone() != "" {
+			return "", errors.New("IPv6 zones are not supported")
 		}
+		host = ip.Unmap().String()
 	} else if !validHostname(host) {
 		return "", errors.New("host is not a valid host name")
 	}
-	return "http://" + host + ":" + port, nil
+	return "http://" + net.JoinHostPort(host, port), nil
 }
 
 func normalizePort(port string) (string, error) {
@@ -267,6 +270,7 @@ func NormalizeBypassHosts(raw []string) ([]string, error) {
 		switch {
 		case h == "":
 			return nil, errors.New("empty entry")
+		// This specific check precedes bypassRE so the refusal explains why.
 		case h == "*":
 			return nil, errors.New("\"*\" is not allowed (it would disable the profile)")
 		case strings.ContainsAny(h, ", \t\r\n"):
@@ -472,13 +476,13 @@ func classifyDecodeError(err error) error {
 	}
 	var de *toml.DecodeError
 	if errors.As(err, &de) {
-		row, col := de.Position()
+		row, _ := de.Position()
 		if key := de.Key(); len(key) > 0 {
 			return refusal.New(refusal.CodeProfileInvalid, subjectForKey(key),
-				fmt.Sprintf("key %s: %s (line %d, column %d)", strings.Join(key, "."), strings.TrimPrefix(de.Error(), "toml: "), row, col))
+				fmt.Sprintf("%s: wrong type", strings.Join(key, ".")))
 		}
 		return refusal.New(refusal.CodeFileUnreadable, FileName,
-			fmt.Sprintf("cannot parse: %s (line %d, column %d)", strings.TrimPrefix(de.Error(), "toml: "), row, col))
+			fmt.Sprintf("syntax error at line %d", row))
 	}
 	return refusal.New(refusal.CodeFileUnreadable, FileName, "cannot parse")
 }

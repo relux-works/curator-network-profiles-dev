@@ -95,16 +95,16 @@ func TestParseTable(t *testing.T) {
 		{name: "empty document", doc: "", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "schema is required"},
 		{name: "wrong schema", doc: "schema = \"relux-network-profiles-v2\"\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "schema must be"},
 		{name: "only schema", doc: "schema = \"relux-network-profiles-v1\"\n"},
-		{name: "syntax error", doc: "schema = \n", code: refusal.CodeFileUnreadable, subject: "network.toml", detail: "cannot parse"},
+		{name: "syntax error", doc: "schema = \n", code: refusal.CodeFileUnreadable, subject: "network.toml", detail: "syntax error at line 1"},
 		{name: "unknown top-level key", doc: "schema = \"relux-network-profiles-v1\"\nextra = 1\n", code: refusal.CodeProfileInvalid, subject: "network.toml", detail: "unknown key extra"},
 		{name: "unknown profile key", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\nproxy_password = \"hunter2\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "unknown key networks.egress-a.proxy_password", absent: "hunter2"},
-		{name: "type mismatch", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = \"localhost\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "key networks.egress-a.bypass_hosts"},
+		{name: "type mismatch", doc: "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = \"localhost\"\n", code: refusal.CodeProfileInvalid, subject: "egress-a", detail: "networks.egress-a.bypass_hosts: wrong type"},
 		{name: "bad name", doc: "schema = \"relux-network-profiles-v1\"\n[networks.Egress-A]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "Egress-A", detail: "name must match"},
 		{name: "unknown kind", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"socks5\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "kind is not supported"},
 		{name: "missing kind", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "kind is required"},
 		{name: "credentials in endpoint never echoed", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://alice:s3cret@127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "userinfo", absent: "s3cret"},
 		{name: "missing required bypass", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "must include localhost, 127.0.0.1 and ::1"},
-		{name: "star bypass", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\", \"*\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "\"*\" is not allowed"},
+		{name: "star bypass", doc: "schema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\", \"*\"]\n", code: refusal.CodeProfileInvalid, subject: "a", detail: "\"*\" is not allowed (it would disable the profile)"},
 		{name: "default unknown", doc: "schema = \"relux-network-profiles-v1\"\ndefault = \"nope\"\n", code: refusal.CodeProfileInvalid, subject: "default", detail: "unknown profile"},
 		{name: "default known", doc: "default = \"a\"\nschema = \"relux-network-profiles-v1\"\n[networks.a]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n"},
 		{name: "quoted dotted name", doc: "schema = \"relux-network-profiles-v1\"\n[networks.\"vpn.eu\"]\nkind = \"external-http-proxy\"\nendpoint = \"http://127.0.0.1:1\"\nbypass_hosts = [\"localhost\", \"127.0.0.1\", \"::1\"]\n"},
@@ -152,6 +152,9 @@ func TestNormalizeEndpoint(t *testing.T) {
 	}{
 		{"http://127.0.0.1:18081", "http://127.0.0.1:18081", ""},
 		{"HTTP://LocalHost:8080/", "http://localhost:8080", ""},
+		{"http://[fe80::1%25eth0]:18081", "", "IPv6 zones are not supported"},
+		{"http://[::ffff:127.0.0.1]:18081", "http://127.0.0.1:18081", ""},
+		{"http://[0:0:0:0:0:0:0:1]:3128", "http://[::1]:3128", ""},
 		{"http://[::1]:3128", "http://[::1]:3128", ""},
 		{"http://[2001:DB8::1]:3128/", "http://[2001:db8::1]:3128", ""},
 		{"http://proxy.corp.invalid:03128", "http://proxy.corp.invalid:3128", ""},
@@ -207,7 +210,7 @@ func TestNormalizeBypassHosts(t *testing.T) {
 		{"case and dupes", []string{"LocalHost", "::1", "127.0.0.1", " localhost ", "Engine.Local"}, "127.0.0.1,::1,engine.local,localhost", ""},
 		{"suffix, cidr, port", []string{".corp.invalid", "10.0.0.0/8", "[::1]:11434", "localhost", "127.0.0.1", "::1"}, ".corp.invalid,10.0.0.0/8,127.0.0.1,::1,[::1]:11434,localhost", ""},
 		{"empty", []string{"localhost", ""}, "", "empty entry"},
-		{"star", []string{"*"}, "", "\"*\" is not allowed"},
+		{"star", []string{"*"}, "", "\"*\" is not allowed (it would disable the profile)"},
 		{"comma", []string{"a,b"}, "", "comma or whitespace"},
 		{"inner space", []string{"a b"}, "", "comma or whitespace"},
 		{"charset", []string{"a;b"}, "", "outside"},
@@ -333,5 +336,24 @@ func TestRefusalsAreTyped(t *testing.T) {
 	var r *refusal.Refusal
 	if !errors.As(err, &r) {
 		t.Fatalf("not a refusal: %v", err)
+	}
+}
+
+func TestDecodeErrorsAreSanitized(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ doc, detail string }{
+		{"schema = [\"private-value\"]\n", "schema: wrong type"},
+		{strings.Replace(specFile, `endpoint     = "http://127.0.0.1:18081"`, `endpoint = ["private-value"]`, 1), "networks.egress-a.endpoint: wrong type"},
+		{"schema = \"private-value\n", "syntax error at line 1"},
+	} {
+		_, err := netprofile.Parse([]byte(tc.doc))
+		if err == nil || !strings.Contains(err.Error(), tc.detail) {
+			t.Fatalf("error = %v, want %s", err, tc.detail)
+		}
+		for _, leak := range []string{"netprofile.raw", "struct field", "private-value"} {
+			if strings.Contains(err.Error(), leak) {
+				t.Fatalf("leak: %v", err)
+			}
+		}
 	}
 }

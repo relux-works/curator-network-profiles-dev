@@ -498,22 +498,17 @@ func TestExecDryRun(t *testing.T) {
 	h := newHarness(t)
 	h.writeFile(twoProfiles)
 	h.confirmAll()
-	fp := &fakeProber{}
-	h.prober = fp
 	code, stdout, stderr := h.run("exec", "egress-a", "--dry-run", "--preflight-timeout", "1s", "--", "codex", "--full-auto")
 	if code != 0 || stderr != "" {
 		t.Fatalf("dry run: %d %q %q", code, stdout, stderr)
 	}
-	for _, want := range []string{"dry run: would exec codex --full-auto", "profile_ref:      egress-a", "profile_digest:   sha256:1e5912de", "adapter=generic-env-v1 harness=exec build=\"\" entrypoint=codex", "assurance:        cooperative", "origin:           explicit", "probe:            tcp ok, connect ok, tls ok at 2026-10-01T12:00:00Z", "set:   HTTPS_PROXY=http://127.0.0.1:18081"} {
+	for _, want := range []string{"dry run: would exec codex --full-auto", "profile_ref:      egress-a", "profile_digest:   sha256:1e5912de", "adapter=generic-env-v1 harness=exec build=\"\" entrypoint=codex", "assurance:        cooperative", "origin:           explicit", "probe:            tcp skipped, connect skipped, tls skipped at 2026-10-01T12:00:00Z", "set:   HTTPS_PROXY=http://127.0.0.1:18081"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, stdout)
 		}
 	}
 	if len(h.exec.calls) != 0 {
 		t.Fatal("dry run exec'd")
-	}
-	if len(fp.calls) != 1 || fp.calls[0].Timeout != time.Second || fp.calls[0].Target != "probe.invalid:443" {
-		t.Fatalf("preflight calls = %+v", fp.calls)
 	}
 	code, stdout, _ = h.run("--json", "exec", "--dry-run", "egress-b", "--", "/usr/local/bin/claude")
 	m := decode(t, stdout)
