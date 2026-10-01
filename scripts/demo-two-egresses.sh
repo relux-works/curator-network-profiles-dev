@@ -29,34 +29,44 @@ BIN="$TMP/bin"
 DEMO_HOME="$TMP/home"
 mkdir -p "$BIN" "$DEMO_HOME"
 
-echo "== build (into $BIN)"
-(cd "$ROOT" && go build -o "$BIN/curator-network" ./cmd/curator-network \
+# Scrub every spelling of *_PROXY before even querying the warm Go caches.
+while IFS='=' read -r name _; do
+  case "$name" in *_[Pp][Rr][Oo][Xx][Yy]) unset "$name" ;; esac
+done < <(env)
+export GOPROXY=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local
+export GONOPROXY=none GOPRIVATE=none GOSUMDB=off
+CACHE_DIRS="$(cd "$ROOT" && go env GOCACHE GOMODCACHE)"
+export GOCACHE="${CACHE_DIRS%%$'\n'*}" GOMODCACHE="${CACHE_DIRS#*$'\n'}"
+# Both builds and launches get a private HOME and all three XDG directories.
+export HOME="$DEMO_HOME"
+export XDG_CONFIG_HOME="$TMP/xdg-config" XDG_CACHE_HOME="$TMP/xdg-cache" XDG_DATA_HOME="$TMP/xdg-data"
+export GOENV=off
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+export PATH="$BIN:$PATH"
+
+echo "== build (into $BIN, offline)"
+(cd "$ROOT" && make build BIN="$BIN/curator-network" \
   && go build -o "$BIN/egress-client" ./internal/testproxy/cmd/egress-client \
   && go build -o "$BIN/loopback-proxy" ./internal/testproxy/cmd/loopback-proxy)
 
-start_proxy() { # <id> -> prints the proxy URL
-  local id="$1" i=0
-  "$BIN/loopback-proxy" --id "$id" --addr-file "$TMP/proxy-$id.addr" >/dev/null 2>"$TMP/proxy-$id.log" &
+start_proxy() { # <id>; readiness is the URL sent through the FIFO
+  local id="$1" ready="$TMP/proxy-$1.ready" url
+  mkfifo "$ready"
+  "$BIN/loopback-proxy" --id "$id" >"$ready" 2>"$TMP/proxy-$id.log" &
   PIDS+=("$!")
-  until [ -s "$TMP/proxy-$id.addr" ]; do
-    i=$((i + 1))
-    if [ "$i" -gt 200 ]; then echo "proxy $id did not start" >&2; exit 1; fi
-    sleep 0.05
-  done
-  tr -d '\n' <"$TMP/proxy-$id.addr"
+  if ! IFS= read -r -t 10 url <"$ready"; then echo "proxy $id did not start" >&2; exit 1; fi
+  case "$url" in http://127.0.0.1:*) ;; *) echo "proxy $id did not bind loopback" >&2; exit 1 ;; esac
+  printf '%s\n' "$url" >"$TMP/proxy-$id.addr"
+  rm "$ready"
 }
 
 echo "== start three loopback proxies"
-A_URL="$(start_proxy A)"
-B_URL="$(start_proxy B)"
-WRONG_URL="$(start_proxy WRONG)"
+start_proxy A; A_URL="$(cat "$TMP/proxy-A.addr")"
+start_proxy B; B_URL="$(cat "$TMP/proxy-B.addr")"
+start_proxy WRONG; WRONG_URL="$(cat "$TMP/proxy-WRONG.addr")"
 echo "proxy A:     $A_URL"
 echo "proxy B:     $B_URL"
 echo "proxy WRONG: $WRONG_URL (ambient, must never be used)"
-
-# From here on every command runs with the temporary HOME.
-export HOME="$DEMO_HOME"
-export PATH="$BIN:$PATH"
 
 echo
 echo "== curator-network --version"
@@ -101,7 +111,7 @@ curator-network check --all --probe
 echo
 echo "== hostile ambient environment for the launches"
 export HTTPS_PROXY="$WRONG_URL" http_proxy="$WRONG_URL" all_proxy="$WRONG_URL" NO_PROXY='*'
-env | grep -i proxy | sort
+env | grep -i proxy | sort | tee "$TMP/parent-proxy-before"
 
 echo
 echo "== two launches at the same time"
@@ -109,7 +119,11 @@ curator-network exec egress-a -- egress-client >"$TMP/out-a" 2>"$TMP/err-a" &
 PA=$!
 curator-network exec egress-b -- egress-client >"$TMP/out-b" 2>"$TMP/err-b" &
 PB=$!
+PIDS+=("$PA" "$PB")
 wait "$PA"; wait "$PB"
+test "$(cat "$TMP/out-a")" = "egress=A"
+test "$(cat "$TMP/out-b")" = "egress=B"
+test ! -s "$TMP/proxy-WRONG.log"
 echo "launch A printed: $(cat "$TMP/out-a")   (stderr: $(cat "$TMP/err-a"))"
 echo "launch B printed: $(cat "$TMP/out-b")   (stderr: $(cat "$TMP/err-b"))"
 
@@ -129,5 +143,7 @@ done
 
 echo
 echo "== the parent environment is untouched"
-env | grep -i proxy | sort
+env | grep -i proxy | sort | tee "$TMP/parent-proxy-after"
+cmp "$TMP/parent-proxy-before" "$TMP/parent-proxy-after"
+echo "parent proxy environment comparison: identical"
 echo "done"

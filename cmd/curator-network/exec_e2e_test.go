@@ -38,12 +38,31 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binDir = dir
-	// The Go tool needs its own cache and module state; it inherits the
-	// test process environment. The built binaries never see it: every
-	// launch below carries an explicit environment with a temporary HOME.
+	// Read the parent's warm cache locations once; all builds below share
+	// the caches but use a private HOME/XDG and an offline, scrubbed env.
+	query := exec.Command("go", "env", "GOCACHE", "GOMODCACHE")
+	query.Env = offlineEnv(os.Environ())
+	cacheOutput, err := query.Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "go env cache directories:", err)
+		_ = os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	caches := strings.Split(strings.TrimSpace(string(cacheOutput)), "\n")
+	if len(caches) != 2 {
+		fmt.Fprintln(os.Stderr, "go env returned invalid cache directories")
+		_ = os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "home"), 0700); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	buildEnvironment := buildEnv(os.Environ(), filepath.Join(dir, "home"), caches[0], caches[1])
 	for _, b := range []struct{ name, pkg string }{{"curator-network", "."}, {"egress-client", "../../internal/testproxy/cmd/egress-client"}} {
 		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, b.name), b.pkg)
-		cmd.Env = os.Environ()
+		cmd.Env = buildEnvironment
 		if out, err := cmd.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "build %s: %v\n%s", b.name, err, out)
 			_ = os.RemoveAll(dir)
@@ -76,7 +95,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Cleanup(func() { _ = px.Close() })
 		*p.dst = px
 	}
-	base := []string{"HOME=" + f.home, "PATH=" + binDir, "XDG_CONFIG_HOME=" + filepath.Join(f.home, "xdg"), "TMPDIR=" + f.home}
+	base := []string{"HOME=" + f.home, "PATH=" + binDir, "XDG_CONFIG_HOME=" + filepath.Join(f.home, "config"), "XDG_CACHE_HOME=" + filepath.Join(f.home, "cache"), "XDG_DATA_HOME=" + filepath.Join(f.home, "data"), "TMPDIR=" + f.home}
 	for _, add := range []struct{ name, url string }{{"egress-a", f.a.URL()}, {"egress-b", f.b.URL()}} {
 		cmd := exec.Command(filepath.Join(binDir, "curator-network"), "add", add.name, "--endpoint", add.url)
 		cmd.Env = base
@@ -233,6 +252,11 @@ func TestDryRunAndJSONThroughTheBinary(t *testing.T) {
 	if got := f.a.Requests(); len(got) != 0 {
 		t.Fatalf("dry run reached the proxy: %+v", got)
 	}
+	// A TCP-only dry run must also succeed when the proxy is unreachable.
+	l = f.launch(t, "exec", "egress-dead", "--dry-run", "--json", "--", "egress-client")
+	if l.code != 0 || !strings.Contains(l.stdout, `"tcp":"skipped","connect":"skipped","tls":"skipped"`) {
+		t.Fatalf("unreachable dry run: %+v", l)
+	}
 	l = f.launch(t, "check", "--all", "--probe", "--json")
 	if l.code != 1 || !strings.Contains(l.stdout, `"schema":"curator-network-check-v1","ok":false`) || !strings.Contains(l.stderr, "network_proxy_unreachable: egress-dead") {
 		t.Fatalf("check: code %d stdout %q stderr %q", l.code, l.stdout, l.stderr)
@@ -240,5 +264,67 @@ func TestDryRunAndJSONThroughTheBinary(t *testing.T) {
 	l = f.launch(t, "list")
 	if l.code != 0 || !strings.Contains(l.stdout, "egress-a") || !strings.Contains(l.stdout, "yes") {
 		t.Fatalf("list: %q", l.stdout)
+	}
+}
+
+// offlineEnv also protects the cache-location query from fetching. Private
+// module routing and checksum settings cannot bypass GOPROXY=off.
+func offlineEnv(parent []string) []string {
+	out := make([]string, 0, len(parent))
+	for _, entry := range parent {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || strings.HasSuffix(strings.ToLower(name), "_proxy") || name == "GOPROXY" || name == "GOFLAGS" || name == "GOTOOLCHAIN" || name == "GOPRIVATE" || name == "GONOPROXY" || name == "GOSUMDB" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GONOPROXY=none", "GOPRIVATE=none", "GOSUMDB=off")
+}
+
+func buildEnv(parent []string, home, cache, modcache string) []string {
+	out := make([]string, 0, len(parent))
+	for _, entry := range offlineEnv(parent) {
+		name, _, _ := strings.Cut(entry, "=")
+		switch name {
+		case "HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "TMPDIR", "GOCACHE", "GOMODCACHE", "GOENV":
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "XDG_DATA_HOME="+filepath.Join(home, "data"), "TMPDIR="+home, "GOCACHE="+cache, "GOMODCACHE="+modcache, "GOENV=off")
+}
+
+func TestBuildEnvironmentIsOfflineAndPrivate(t *testing.T) {
+	t.Parallel()
+	parent := []string{"PATH=/tools", "HOME=/operator", "XDG_CONFIG_HOME=/operator-config", "HTTPS_PROXY=http://ambient.invalid:1", "weird_proxy=http://ambient.invalid:1", "Http_Proxy=http://ambient.invalid:1", "GOPROXY=https://ambient.invalid", "GOPRIVATE=*.invalid", "GONOPROXY=*", "GOSUMDB=ambient.invalid", "GOFLAGS=-mod=mod", "GOCACHE=/old-cache", "GOMODCACHE=/old-modcache", "KEEP=ok"}
+	before := append([]string(nil), parent...)
+	home := t.TempDir()
+	got := buildEnv(parent, home, "/warm-cache", "/warm-modcache")
+	values := map[string]string{}
+	for _, entry := range got {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(name), "_proxy") {
+			t.Errorf("ambient proxy retained: %s", name)
+		}
+		if _, duplicate := values[name]; duplicate {
+			t.Errorf("duplicate %s", name)
+		}
+		values[name] = value
+	}
+	for key, want := range map[string]string{"HOME": home, "GOCACHE": "/warm-cache", "GOMODCACHE": "/warm-modcache", "GOPROXY": "off", "GONOPROXY": "none", "GOPRIVATE": "none", "GOSUMDB": "off", "GOFLAGS": "-mod=readonly", "GOTOOLCHAIN": "local", "GOENV": "off", "PATH": "/tools", "KEEP": "ok"} {
+		if values[key] != want {
+			t.Errorf("%s = %q, want %q", key, values[key], want)
+		}
+	}
+	for _, key := range []string{"XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "TMPDIR"} {
+		if !strings.HasPrefix(values[key], home+string(filepath.Separator)) && !(key == "TMPDIR" && values[key] == home) {
+			t.Errorf("%s outside temp HOME", key)
+		}
+	}
+	if !reflect.DeepEqual(parent, before) {
+		t.Fatal("parent env mutated")
 	}
 }

@@ -1,6 +1,7 @@
 package probe_test
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"net"
@@ -63,6 +64,16 @@ func TestProbeTable(t *testing.T) {
 	fixed := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	withRoots := &probe.Dialer{RootCAs: up.RootCAs, Now: func() time.Time { return fixed }}
 	systemRoots := &probe.Dialer{}
+	redirect := &probe.Dialer{Now: func() time.Time { return fixed }, Dial: func(context.Context, string, string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			if _, err := http.ReadRequest(bufio.NewReader(server)); err == nil {
+				_, _ = io.WriteString(server, "HTTP/1.1 302 Found\r\nLocation: https://elsewhere.invalid/\r\nContent-Length: 0\r\n\r\n")
+			}
+		}()
+		return client, nil
+	}}
 
 	cases := []struct {
 		name    string
@@ -77,6 +88,7 @@ func TestProbeTable(t *testing.T) {
 	}{
 		{name: "tcp connect tls all ok", d: withRoots, req: probe.Request{Subject: "egress-a", Endpoint: good.URL(), Target: "probe.invalid:443"}, tcp: "ok", connect: "ok", status: 200, tls: "ok"},
 		{name: "tcp only without target", d: withRoots, req: probe.Request{Subject: "egress-a", Endpoint: good.URL()}, tcp: "ok", connect: "skipped", tls: "skipped"},
+		{name: "302 redirect is unreachable", d: redirect, req: probe.Request{Subject: "egress-a", Endpoint: "http://127.0.0.1:1", Target: "probe.invalid:443"}, code: refusal.CodeProxyUnreachable, tcp: "ok", connect: "failed", status: 302, tls: "skipped", detail: "proxy answered 302"},
 		{name: "407 is auth failed", d: withRoots, req: probe.Request{Subject: "egress-a", Endpoint: auth.URL(), Target: "probe.invalid:443"}, code: refusal.CodeProxyAuthFailed, tcp: "ok", connect: "failed", status: 407, tls: "skipped", detail: "407"},
 		{name: "unmapped target 502 is unreachable", d: withRoots, req: probe.Request{Subject: "egress-a", Endpoint: good.URL(), Target: "nowhere.invalid:443"}, code: refusal.CodeProxyUnreachable, tcp: "ok", connect: "failed", status: 502, tls: "skipped", detail: "proxy answered 502"},
 		{name: "closed port is unreachable", d: withRoots, req: probe.Request{Subject: "egress-a", Endpoint: "http://" + closedPort(t), Target: "probe.invalid:443"}, code: refusal.CodeProxyUnreachable, tcp: "failed", connect: "skipped", tls: "skipped", detail: "connection refused"},
@@ -90,7 +102,7 @@ func TestProbeTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			start := time.Now()
-			res, err := tc.d.Probe(context.Background(), tc.req)
+			res, err := boundedProbe(t, tc.d, context.Background(), tc.req)
 			if elapsed := time.Since(start); elapsed > 2*time.Second {
 				t.Fatalf("probe took %v", elapsed)
 			}
@@ -131,11 +143,30 @@ func TestProbeHonoursContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	res, err := (&probe.Dialer{}).Probe(ctx, probe.Request{Subject: "x", Endpoint: hang.URL(), Target: "probe.invalid:443", Timeout: time.Minute})
+	res, err := boundedProbe(t, &probe.Dialer{}, ctx, probe.Request{Subject: "x", Endpoint: hang.URL(), Target: "probe.invalid:443", Timeout: time.Minute})
 	if err == nil || time.Since(start) > 2*time.Second {
 		t.Fatalf("expected a fast deadline refusal, got %v after %v", err, time.Since(start))
 	}
 	if c, _ := refusal.CodeOf(err); c != refusal.CodeProxyUnreachable || res.TCP != probe.StatusOK || res.Connect != probe.StatusFailed {
 		t.Fatalf("res = %+v, err = %v", res, err)
 	}
+}
+
+// The watchdog is a test bound, not synchronization: a lost connection
+// deadline must fail this test within seconds rather than hang the suite.
+func boundedProbe(t *testing.T, d *probe.Dialer, ctx context.Context, req probe.Request) (probe.Result, error) {
+	t.Helper()
+	type answer struct {
+		result probe.Result
+		err    error
+	}
+	done := make(chan answer, 1)
+	go func() { result, err := d.Probe(ctx, req); done <- answer{result, err} }()
+	select {
+	case got := <-done:
+		return got.result, got.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe exceeded 5s watchdog")
+	}
+	return probe.Result{}, nil
 }
