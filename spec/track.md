@@ -16,7 +16,7 @@ Several agents on one machine must reach the network through different applicati
 
 | Step | Delivers | Done when | Tracking |
 | --- | --- | --- | --- |
-| N-A | library, the file `~/.curator/network.toml`, the provider `curator-network` with `curator network exec <name> -- <cmd>` and `check --probe`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses | in progress (2026-09-30) |
+| N-A | library, the file `~/.curator/network.toml`, the provider `curator-network` with `curator network exec <name> -- <cmd>` and `check --probe`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses | landed (PR #12, 2026-10-01) |
 | N-B | `curator run --network` | the launcher applies the patch through this library | [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
 | N-C1 | explicit profile on every task-board and tb-sessiond process path, run manifests | a child and a board session use the profile, including retry and resume | [#8](https://github.com/relux-works/curator-network-profiles/issues/8) |
 | N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag | [#9](https://github.com/relux-works/curator-network-profiles/issues/9) |
@@ -24,7 +24,7 @@ Several agents on one machine must reach the network through different applicati
 
 ## Integration
 
-How each process owner applies the patch, where the binding is recorded, and how a resume under a changed profile is refused: `docs/integration-contract.md` (a proposal sent for advice under rule 27 on 2026-09-30; Ivan decides). The normative digest, `EnvPatch` and equality rules are in `spec/contract-appendix.md`, delivered with N-A.
+How each process owner applies the patch, where the binding is recorded, and how a resume under a changed profile is refused: `docs/integration-contract.md` (DRAFT rev 2, 2026-10-02; rule-27 advice closed 2026-10-01T16:00Z; Ivan decides (card C)). The normative digest, `EnvPatch` and equality rules are in `spec/contract-appendix.md`, delivered with N-A.
 
 ## Dependencies
 
