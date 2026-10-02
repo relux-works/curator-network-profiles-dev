@@ -19,10 +19,9 @@ import time
 
 root = Path(sys.argv[1])
 parser = argparse.ArgumentParser(description="Run one harness row in a calibrated loopback-only SIGKILL sandbox.")
-parser.add_argument("--lock-wrapper", required=True, type=Path)
+parser.add_argument("--sink", required=True, type=Path, help="Existing non-forwarding loopback-proxy binary; never built here")
 parser.add_argument("--output-dir", required=True, type=Path, help="New directory for credential-free evidence")
 parser.add_argument("--timeout", type=float, default=30)
-parser.add_argument("--build-timeout", type=float, default=180, help="Maximum lock-wait/build seconds")
 parser.add_argument("--proxy-state", choices=("reachable", "unreachable"), default="reachable")
 parser.add_argument("--proxy-vars", choices=("generic", "lowercase", "uppercase", "all"), default="generic",
                     help="R3 coverage variant; every configured proxy still points at the sink")
@@ -30,7 +29,7 @@ parser.add_argument("--mcp-mode", choices=("inherit", "explicit"))
 parser.add_argument("command", nargs=argparse.REMAINDER, help="After --: absolute executable and arguments")
 args = parser.parse_args(sys.argv[2:])
 command = args.command[1:] if args.command[:1] == ["--"] else args.command
-if not command or not Path(command[0]).is_absolute() or args.timeout <= 0 or args.build_timeout <= 0:
+if not command or not Path(command[0]).is_absolute() or args.timeout <= 0:
     parser.error("Supply an absolute row executable after -- and a positive timeout")
 if sys.platform != "darwin":
     parser.error("This helper requires macOS sandbox-exec")
@@ -44,20 +43,21 @@ protected = [operator_home / name for name in (".claude", ".codex", ".curator", 
 protected += [operator_home / ".claude.json", operator_home / "Library/Keychains", Path("/Library/Keychains")]
 def below(path, directory):
     return path == directory or directory in path.parents
-for path in (Path(command[0]).resolve(), args.output_dir.resolve(), args.lock_wrapper.resolve()):
+for path in (args.output_dir.resolve(), args.sink.resolve()):
     if any(below(path, directory) for directory in protected):
-        parser.error("Refusing executable, evidence, or lock wrapper in an operator config/keychain tree")
+        parser.error("Refusing evidence or sink in an operator config/keychain tree")
+if not args.sink.is_file() or not os.access(args.sink, os.X_OK):
+    parser.error("--sink must be an existing executable; no build is performed")
 if args.output_dir.exists():
     parser.error("--output-dir must be a new directory")
 args.output_dir.mkdir(parents=True, mode=0o700)
 out = args.output_dir.resolve()
 runtime = Path(tempfile.mkdtemp(prefix="harness-verification-", dir="/private/tmp"))
 sink = None
-build = None
 row = None
 known_pids = set()
 summary = {"command": command, "proxy_state": args.proxy_state, "mcp_mode": args.mcp_mode,
-           "proxy_vars": args.proxy_vars,
+           "proxy_vars": args.proxy_vars, "sink_binary": str(args.sink.resolve()),
            "started_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()}
 
 def save_summary():
@@ -65,14 +65,15 @@ def save_summary():
 
 def processes():
     try:
-        result = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,pgid="], capture_output=True, text=True, timeout=2)
+        result = subprocess.run(["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat="], capture_output=True, text=True, timeout=2)
     except subprocess.TimeoutExpired:
         summary.setdefault("sampling_errors", []).append("ps timed out")
         return []
     if result.returncode:
         summary.setdefault("sampling_errors", []).append("ps exit %s" % result.returncode)
         return []
-    return [tuple(map(int, line.split())) for line in result.stdout.splitlines() if len(line.split()) == 3]
+    return [tuple(map(int, fields[:3])) for line in result.stdout.splitlines()
+            if len(fields := line.split()) == 4 and not fields[3].startswith("Z")]
 
 def row_pids():
     if row is None:
@@ -107,7 +108,7 @@ def terminate_row():
         time.sleep(0.05)
     remaining = row_pids()
     if remaining:
-        summary["supervisor_sigkill_pids"] = sorted(remaining)
+        summary["supervisor_sigkill_attempt_pids"] = sorted(remaining)
         for pid in remaining:
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -117,18 +118,6 @@ def terminate_row():
 
 def cleanup():
     terminate_row()
-    if build is not None and build.poll() is None:
-        # Both the wrapper and Go are in this group; never release a lock while
-        # leaving a build behind. A waiting wrapper has not acquired the lock.
-        try:
-            os.killpg(build.pid, signal.SIGTERM)
-            build.wait(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(build.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            build.wait()
     if sink is not None:
         sink.terminate()
         try:
@@ -144,7 +133,7 @@ def interrupted(signum, frame):
 signal.signal(signal.SIGTERM, interrupted)
 signal.signal(signal.SIGINT, interrupted)
 try:
-    for name in ("home", "claude", "codex", "config", "cache", "data", "state", "tmp", "work", "go-cache", "go-mod"):
+    for name in ("home", "claude", "codex", "config", "cache", "data", "state", "tmp", "work"):
         (runtime / name).mkdir(mode=0o700)
     # No inherited auth variables, agent settings, SSH sockets, or runtime options.
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
@@ -152,8 +141,9 @@ try:
            "CODEX_HOME": str(runtime / "codex"), "XDG_CONFIG_HOME": str(runtime / "config"),
            "XDG_CACHE_HOME": str(runtime / "cache"), "XDG_DATA_HOME": str(runtime / "data"),
            "XDG_STATE_HOME": str(runtime / "state"), "TMPDIR": str(runtime / "tmp") + "/"}
-    # Only the executable itself may be read from the operator HOME. In particular,
-    # the installed ~/.codex binary is rejected above, not exempted here.
+    # Executing the installed binary is allowed, including ~/.codex/packages.
+    # Only that literal file is exempted from the operator HOME read denial.
+    # No operator file is exempted from the write denial.
     profile = '''(version 1)
 (allow default)
 (deny network-outbound (with send-signal SIGKILL))
@@ -180,35 +170,9 @@ try:
     activated = subprocess.run(sandbox + ["/usr/bin/true"], env=env, capture_output=True)
     if activated.returncode:
         raise RuntimeError("Sandbox activation failed: " + activated.stderr.decode(errors="replace"))
-    calibration = subprocess.run(sandbox + ["/usr/bin/nc", "-n", "-z", "-w", "2", "1.1.1.1", "443"],
-                                 env=env, capture_output=True, timeout=5)
-    calibration_exit = 128 - calibration.returncode if calibration.returncode < 0 else calibration.returncode
-    summary["calibration_exit"] = calibration_exit
-    save_summary()
-    (out / "calibration.stderr").write_bytes(calibration.stderr)
-    if calibration.returncode != -signal.SIGKILL:
-        raise RuntimeError("Unsafe detector: nc calibration must die with SIGKILL (137); no row started")
-    build_env = dict(env, GOPROXY="off", GOSUMDB="off", GOENV="off", GOTOOLCHAIN="local",
-                     GOFLAGS="-mod=readonly", GOCACHE=str(runtime / "go-cache"), GOMODCACHE=str(runtime / "go-mod"))
-    # The supplied wrapper needs the operator HOME solely for its shared build lock.
-    # Go itself receives the private environment and also runs inside the sandbox.
-    lock_env = {"HOME": str(operator_home), "PATH": env["PATH"]}
-    build_command = ["/bin/bash", str(args.lock_wrapper.resolve()), "/usr/bin/env", "-i"]
-    build_command += [key + "=" + value for key, value in build_env.items()]
-    build_command += sandbox + ["/usr/local/bin/go", "build", "-p", "1", "-o", str(runtime / "sink"),
-                               "./internal/testproxy/cmd/loopback-proxy"]
-    with (out / "build.log").open("wb") as log:
-        build = subprocess.Popen(build_command, cwd=root, env=lock_env, stdout=log, stderr=log, start_new_session=True)
-        try:
-            build.wait(timeout=args.build_timeout)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("Shared build wrapper/Go exceeded --build-timeout; no harness row started")
-    summary["build_exit"] = build.returncode
-    if build.returncode:
-        raise RuntimeError("Offline, locked sink build failed; see build.log")
     with (out / "sink.stdout").open("wb") as stdout, (out / "sink.log").open("wb") as stderr:
         # No --target: CONNECT always gets 502; no upstream is ever dialled.
-        sink = subprocess.Popen(sandbox + [str(runtime / "sink"), "--id", "S", "--addr-file", str(runtime / "sink.addr")],
+        sink = subprocess.Popen(sandbox + [str(args.sink.resolve()), "--id", "S", "--addr-file", str(runtime / "sink.addr")],
                                 env=env, stdout=stdout, stderr=stderr)
     deadline = time.monotonic() + 5
     while not (runtime / "sink.addr").exists():
@@ -218,10 +182,31 @@ try:
     endpoint = (runtime / "sink.addr").read_text().strip()
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]+", endpoint):
         raise RuntimeError("Sink endpoint is not loopback")
-    # For R2, stop this very sink: the patched URL stays a loopback sink URL.
+    # Exercise SIGKILL entirely on loopback. The control adds a deny for the
+    # sink port to the otherwise identical profile. No external probe is used.
+    port = endpoint.rsplit(":", 1)[1]
+    calibration_profile = profile + '(deny network-outbound (remote ip "localhost:' + port + '") (with send-signal SIGKILL))\n'
+    calibration_sb = runtime / "calibration.sb"
+    calibration_sb.write_text(calibration_profile)
+    (out / "calibration.sb").write_text(calibration_profile)
+    calibration = subprocess.run(["/usr/bin/sandbox-exec", "-f", str(calibration_sb),
+                                  "/usr/bin/nc", "-n", "-z", "-w", "2", "127.0.0.1", port],
+                                 env=env, capture_output=True, timeout=5)
+    summary["calibration_exit"] = 128 - calibration.returncode if calibration.returncode < 0 else calibration.returncode
+    summary["calibration_target"] = "127.0.0.1:" + port
+    (out / "calibration.stderr").write_bytes(calibration.stderr)
+    if calibration.returncode != -signal.SIGKILL:
+        raise RuntimeError("Unsafe detector: loopback deny control must die with SIGKILL (137); no row started")
+    allowed = subprocess.run(sandbox + ["/usr/bin/nc", "-n", "-z", "-w", "2", "127.0.0.1", port],
+                             env=env, capture_output=True, timeout=5)
+    summary["loopback_allow_control_exit"] = allowed.returncode
+    if allowed.returncode:
+        raise RuntimeError("Loopback allow control failed; no row started")
+    # R2 uses the brief's closed loopback port, after stopping the sink.
     if args.proxy_state == "unreachable":
         sink.terminate()
         sink.wait(timeout=2)
+        endpoint = "http://127.0.0.1:9"
     summary["endpoint"] = endpoint
     reserved = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY"}
     hostile = {"HTTPS_PROXY": "http://127.0.0.1:9", "NO_PROXY": "*", "Http_Proxy": "http://127.0.0.1:9",
@@ -274,8 +259,9 @@ for line in sys.stdin:
     (out / "mcp-config.toml").write_text(config)
     command = [arg.replace("{mcp_json}", str(mcp_json)).replace("{stub}", str(stub)) for arg in command]
     summary["command"] = command
-    login = re.compile(r"not logged in|please (?:run .*|log in|login)|(?:missing|no) (?:an? )?(?:api key|authentication)|run (?:/login|codex login)|(?:api key|authentication|login).*(?:is required|required to)|invalid api key.*(?:login|fix external api key)", re.I)
+    login = re.compile(r"not logged in|please (?:run .*|log in|login)|(?:missing|no) (?:an? )?(?:api key|authentication)|run (?:/login|codex login)|(?:api key|authentication|login).*(?:is required|required to)|invalid api key.*(?:login|fix external api key)|keychain|securityd", re.I)
     non_loopback = []
+    sample_count = 0
     with (out / "row.stdout").open("wb") as stdout, (out / "row.stderr").open("wb") as stderr, (out / "lsof.log").open("w") as sockets:
         row = subprocess.Popen(sandbox + command, cwd=runtime / "work", env=env,
                                stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr, start_new_session=True)
@@ -284,6 +270,7 @@ for line in sys.stdin:
         while True:
             pids = row_pids()
             if pids:
+                sample_count += 1
                 try:
                     sample = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", ",".join(map(str, sorted(pids))), "-i"],
                                             capture_output=True, text=True, timeout=2)
@@ -315,6 +302,9 @@ for line in sys.stdin:
     returncode = row.wait()
     summary["exit"] = 128 - returncode if returncode < 0 else returncode
     summary["root_sigkill"] = returncode == -signal.SIGKILL
+    summary["duration_seconds"] = round(time.monotonic() - started, 3)
+    summary["lsof_sample_count"] = sample_count
+    summary["child_death_messages"] = [line for line in output.splitlines() if re.search(r"SIGKILL|signal.?9|killed", line, re.I)]
     summary["non_loopback_socket_samples"] = sorted(set(non_loopback))
     summary["sink_requests"] = (out / "sink.log").read_text().splitlines()
     dump = runtime / "mcp-env.json"

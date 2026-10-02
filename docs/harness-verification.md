@@ -10,8 +10,8 @@ Record each reachable transport separately. Missing evidence leaves that scope
 Never change the host network: no networksetup, scutil, route, ifconfig, pfctl,
 DNS/hosts edits, sudo, system proxy, TUN, VPN, WireGuard, or sing-box operations.
 No external probes, forwarding proxies, real credentials, login, or keychain
-access. The **sole deliberate external connect attempt** is the detector
-calibration below; the sandbox must kill it before it can leave the host.
+access. Detector calibration uses only the local sink; no external destination
+is probed, even under the sandbox.
 Stop an authentication-gated row as **needs login (Ivan's approval)**. Do not
 work around authentication. Do not push, post, or spawn agents.
 
@@ -19,13 +19,14 @@ Use a new temporary HOME, CLAUDE_CONFIG_DIR, CODEX_HOME, all XDG directories,
 TMPDIR, and working directory for every row. Construct the environment from an
 allowlist; do not inherit credential variables, SSH sockets, or runtime settings.
 Never read/write the operator's `.claude`, `.codex`, `.curator`, `.config`, or
-other configuration. An executable located inside those trees is also refused;
-obtain an existing executable outside them. File rules deny access to the
-operator HOME except the selected executable and, if needed, Python's code
-installation. Keychain files and securityd access are denied too.
+other configuration. Executing the installed binary inside `.codex/packages`
+is allowed: only that literal executable gets a read exception. File rules deny
+all writes to the operator HOME and all other reads there, except Python's code
+installation if needed. Keychain files and securityd access are denied too.
 
-The sink is `internal/testproxy/cmd/loopback-proxy`, built offline into the
-temporary runtime directory. Start with `--id S --addr-file <temp>/sink.addr`,
+Supply the prebuilt `internal/testproxy/cmd/loopback-proxy` binary with
+`--sink <absolute path>`. The helper performs no build and uses no build lock.
+Start with `--id S --addr-file <temp>/sink.addr`,
 **without any `--target`**. It binds `127.0.0.1:0`, records method/target on
 stderr, returns 502 for CONNECT and ordinary upstream requests, and answers
 absolute-URI `.invalid` GETs locally. With no target map it never forwards,
@@ -50,13 +51,20 @@ The helper archives the exact rendered profile for every attempt.
 (deny file-read* file-write* (subpath "/Library/Keychains"))
 ```
 
-First activate the profile with `sandbox-exec -f <profile> /usr/bin/true`.
-Then, in the private environment, calibrate:
+First activate the profile with `sandbox-exec -f <profile> /usr/bin/true`
+and start the prebuilt sink. For the negative control, append this rule to a
+**separate calibration profile**, using the sink's ephemeral port:
 
-```sh
-sandbox-exec -f <profile> /usr/bin/nc -n -z -w 2 1.1.1.1 443
-# Required: SIGKILL, shell exit 137 (Python subprocess returncode -9).
+```scheme
+(deny network-outbound (remote ip "localhost:<sink port>") (with send-signal SIGKILL))
 ```
+
+Run `nc -n -z -w 2 127.0.0.1 <sink port>` under that calibration profile;
+it must die with SIGKILL (137, Python returncode -9). Run the same loopback
+command under the original profile; it must exit 0. Archive both profiles.
+This checks signal delivery and loopback permission without probing a real
+network host. It does not empirically calibrate an external destination; the
+original profile's blanket outbound deny provides that confinement.
 
 Any other result stops verification before a harness is launched. Unified-log
 denials were invisible on this host; their absence is not evidence. The new
@@ -83,8 +91,8 @@ hostile values. Keep the proxy pointed at the sink for every harness launch.
 | Row | Setup | Pass criteria / interpretation |
 |---|---|---|
 | R0 | Offline/no-provider control, patched, sandboxed | Control completes with no observed SIGKILL or non-loopback sockets and normally zero sink requests. `--version` checks startup only; it does not replace an offline turn control. |
-| R1 | A reachable own-client operation; live sink | Own-client request appears at sink, no observed SIGKILL/non-loopback sockets. Record handling of 502. Auth refusal or no exercised client means unverified. |
-| R2 | Same operation as successful R1; stop the sink but retain its URL | Client reports connection refusal, with no observed SIGKILL/non-loopback sockets: no observed direct fallback on this path. If R1 did not exercise the client, R2 cannot certify fallback behavior. |
+| R1 | A reachable own-client operation; live sink | Own-client request appears at sink, no observed SIGKILL/non-loopback sockets. Record handling of 502. Record API-target routing separately from an authenticated model operation; auth refusal leaves that model scope unverified. |
+| R2 | Same operation as R1; stop the sink and use 127.0.0.1:9 | Client reports connection refusal, with no observed SIGKILL/non-loopback sockets: no observed direct fallback on this path. If R1 did not exercise the client, R2 cannot certify fallback behavior. |
 | R3 | Informative variable coverage: lowercase-only, uppercase-only, ALL_PROXY-only | After scrubbing hostile values, retain only the variant's proxy variables, all pointing at the same sink, plus loopback-only NO_PROXY/no_proxy. Record which variants reach the sink. A client requiring ALL_PROXY needs an adapter beyond generic-env-v1. |
 | R4 | MCP stdio env-dumping stub; inherited environment | Stub starts and receives all six exact values, no extra reserved spellings/hostile values. No dump is blocked/unverified, not an inheritance failure. |
 | R4b | Same stub with all six values in its server `env` block | Explicit values arrive; report this mitigation separately from R4. Do not treat it as evidence of automatic inheritance. |
@@ -93,25 +101,22 @@ hostile values. Keep the proxy pointed at the sink for every harness launch.
 
 ## Helper and evidence
 
-`scripts/verify-harness.sh` runs one command per invocation, sequentially. It
-calibrates, builds the sink through the supplied shared-lock wrapper with
-`go build -p 1` and offline Go settings, applies the patch, creates MCP fixtures,
-and launches the command under sandbox-exec. The wrapper uses the operator HOME
-solely for the brief-prescribed shared build lock; Go and every harness receive
-the private HOME/config environment. Never bypass a busy lock or its host-health
-gate. `--build-timeout` bounds the lock wait/build (default 180 s).
+`scripts/verify-harness.sh` runs one command per invocation. It starts the
+prebuilt sink, calibrates on loopback, applies the patch, creates MCP fixtures,
+and launches the installed executable under sandbox-exec. There is no build,
+shared lock, or operator-config access in the run path.
 
 Examples (use a **new** evidence directory each time):
 
 ```sh
-scripts/verify-harness.sh --lock-wrapper "$LOCK_WRAPPER" \
+scripts/verify-harness.sh --sink "$SINK" \
   --output-dir "$EVIDENCE/claude-R4" --mcp-mode inherit -- \
-  /safe/path/claude -p --mcp-config '{mcp_json}' --strict-mcp-config \
-  'List the available MCP tools.'
+  /Users/administrator/.local/bin/claude -p 'say hi' \
+  --mcp-config '{mcp_json}' --strict-mcp-config
 
-scripts/verify-harness.sh --lock-wrapper "$LOCK_WRAPPER" \
+scripts/verify-harness.sh --sink "$SINK" \
   --output-dir "$EVIDENCE/codex-R4b" --mcp-mode explicit -- \
-  /safe/path/codex exec --skip-git-repo-check 'List the available MCP tools.'
+  /Users/administrator/.local/bin/codex exec --skip-git-repo-check 'say hi'
 ```
 
 `{mcp_json}` is replaced with the private Claude configuration path. The helper
@@ -119,7 +124,8 @@ writes Codex's private `CODEX_HOME/config.toml`. The tiny stdio MCP script write
 its full environment before answering initialize/tools/list; its dump filename
 is embedded in the script, so an env allowlist cannot hide the destination.
 `--mcp-mode explicit` adds all six patch values to the server entry. R2 uses
-`--proxy-state unreachable`, which terminates the sink without changing its URL.
+`--proxy-state unreachable`, which stops the sink and sets the proxy to
+`http://127.0.0.1:9`, as required for round 2.
 R3 uses `--proxy-vars lowercase`, `uppercase`, or `all`; the default is `generic`.
 Coverage variants cannot be combined with MCP inheritance rows.
 `--timeout` bounds the row (default 30 s); auth messages stop it immediately.
@@ -127,8 +133,8 @@ Coverage variants cannot be combined with MCP inheritance rows.
 Python launcher is unavailable. The shell does not source operator profiles.
 
 Signal handlers and `finally` cleanup terminate supervised processes and remove
-the sink binary, private HOME/configs, and runtime tree. The evidence directory
-is retained with mode 0700; all env dumps originate from the clean allowlist.
+private HOME/configs and the runtime tree; the supplied sink binary is retained.
+The evidence directory is retained with mode 0700; all env dumps originate from the clean allowlist.
 The helper's nonzero exit may be a **helper/prerequisite error**, not a harness
 exit. Check `summary.json` before interpreting it.
 
@@ -145,72 +151,117 @@ Record:
 - One-line behavior and pass/fail/blocked status for every row, including rows
   that need Ivan's login approval. No row below authorizes a real egress check.
 
-## Results, 2026-10-02
+## Results, round 2, 2026-10-02
 
-### This run: Claude Code 2.1.287 / `claude -p`
+Executed 16 sandboxed commands from **08:50:15Z to 08:55:52Z**: two version
+checks and seven requested rows per harness. Every loopback deny control exited
+137 and every allow control exited 0. No helper, cleanup, or lsof sampling errors
+occurred. There were **337 lsof samples**, no observed non-loopback sockets,
+no root sandbox SIGKILL, and no child-death messages. Sampling is observational;
+the sandbox protects descendants even when their lifetime escapes a sample.
 
-The installation path identifies the requested build; CLI version and client
-behavior are **not confirmed**, because the sink build never passed its gate.
+Raw evidence is retained outside Git at `scratchpad/hv-r2-evidence/` beside the
+brief, with one directory per table row. Each contains full argv, UTC start,
+parent env, patch seed/result, MCP configs, profiles, stdout/stderr, sink lines,
+and lsof samples; R4/R4b also contain the full child env dump.
 
-| Row | Harness exit (helper exit) | Sink requests | Sandbox SIGKILL | Non-loopback sockets | Env verdict | Behavior |
+### Claude Code 2.1.287 / `claude -p`
+
+Confirmed by sandboxed `--version`: `2.1.287 (Claude Code)`. Installed launcher
+resolved to `/Users/administrator/.local/share/claude/versions/2.1.287`.
+Entrypoint: `claude -p "say hi" --mcp-config <temp json> --strict-mcp-config`.
+All turn rows stopped on `Not logged in · Please run /login` with exit 1;
+no login was attempted. The configured stdio MCP stub starts before that gate.
+
+| Row | Exit | Sink lines | Sandbox SIGKILL | Non-loopback sockets / samples | Env dump | Verdict / behavior |
 |---|---|---|---|---|---|---|
-| R0 startup `--version` | — (1) | Not started | Not run | Not sampled | N/A | Interrupted a waiting build wrapper; no harness launched. |
-| R1 | — | Not started | Not run | Not sampled | N/A | Blocked by sink-build prerequisite; own client not exercised. |
-| R2 | — | Not started | Not run | Not sampled | N/A | Blocked; no successful R1 to compare. |
-| R4 | — (1) | Not started | Not run | Not sampled | No dump | Calibration 137; shared build gate timed out at 30 s before launch. |
-| R4b | — (1) | Not started | Not run | Not sampled | No dump | Calibration 137; shared build gate timed out at 30 s before launch. |
-| R3 / R5 / R7 | — | Not started | Not run | Not sampled | Unverified | No harness launched; no coverage claim. |
+| R0 startup | 0 | 0 | No | 0 observed / 2 | N/A | PASS startup/version only. |
+| R4 | 1 | 1 × `CONNECT api.anthropic.com:443` | No | 0 observed / 6 | PASS | PASS inheritance; login stop. |
+| R4b | 1 | 1 × `CONNECT api.anthropic.com:443` | No | 0 observed / 4 | PASS | PASS explicit env; login stop. |
+| R1 | 1 | 1 × `CONNECT api.anthropic.com:443` | No | 0 observed / 3 | PASS (extra stub) | PASS API-target proxy routing; model turn needs login. |
+| R2 | 1 | 0 | No | 0 observed / 1 | PASS (extra stub) | Login exit; no observed fallback, transport refusal unverified. |
+| R3-lowercase | 1 | 1 × `CONNECT api.anthropic.com:443` | No | 0 observed / 2 | variant PASS | PASS variable coverage; login stop. |
+| R3-uppercase | 1 | 1 × `CONNECT api.anthropic.com:443` | No | 0 observed / 2 | variant PASS | PASS variable coverage; login stop. |
+| R3-all | 1 | 1 × `CONNECT api.anthropic.com:443`<br>1 × `POST https://api.anthropic.com/api/event_logging/v2/batch` | No | 0 observed / 2 | variant PASS | PASS variable coverage; login stop. |
+| R5 aggregate | — | — | None observed | 0 observed / 22 | N/A | PASS sampled sockets; short-lived children can be missed. |
 
-The wrapper reported `syspolicyd state=spawn; waiting` and an existing shared
-lock (`ivan-network-profiles pid=96967`, acquired 05:39:02Z). Neither daemon nor
-lock was changed. All three calibration attempts returned 137. This does **not**
-certify Claude's proxy handling or child inheritance. Authentication was not
-reached, so these rows are not classified as needs-login.
+Proposal: **generic-env-v1 OK** for the observed API-target transport and stdio
+MCP inheritance. A sink CONNECT proves routing to the API target, not an
+authenticated model request. R2 did not expose a transport-refusal message;
+authenticated turn/fallback and hook/tool scopes remain unverified.
 
-### This run: codex-cli 0.159.0 / `codex exec`
+### codex-cli 0.159.0 / `codex exec`
 
-The sole installed launcher resolves into the operator's real `.codex/packages`
-tree. It was not executed or copied. No safe alternative path was supplied;
-requested build is unconfirmed by a CLI run.
+Confirmed by sandboxed `--version`: `codex-cli 0.159.0`. Installed launcher
+resolved to `/Users/administrator/.codex/packages/standalone/releases/0.159.0-x86_64-apple-darwin/bin/codex`.
+Entrypoint: `codex exec --skip-git-repo-check "say hi"`; the extra flag permits
+the fresh temporary working directory. Only R4/R4b define the temporary
+`CODEX_HOME/config.toml` MCP server. No authentication or operator config is
+inherited, and no login prompt was observed.
 
-| Row | Harness exit | Sink requests | Sandbox SIGKILL | Non-loopback sockets | Env verdict | Behavior |
+| Row | Exit | Sink lines | Sandbox SIGKILL | Non-loopback sockets / samples | Env dump | Verdict / behavior |
 |---|---|---|---|---|---|---|
-| R0 / R1 / R2 | — | Not started | Not run | Not sampled | N/A | Safety-blocked executable path; client not exercised. |
-| R4 / R4b | — | Not started | Not run | Not sampled | No dump | Safety-blocked executable path; inheritance/explicit env unverified. |
-| R3 / R5 / R7 | — | Not started | Not run | Not sampled | Unverified | No harness launched. |
+| R0 startup | 0 | 0 | No | 0 observed / 1 | N/A | PASS startup/version only. |
+| R4 | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>20 × `CONNECT api.openai.com:443` | No | 0 observed / 45 | FAIL | FAIL inheritance: all six absent; hostile values absent too. |
+| R4b | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>19 × `CONNECT api.openai.com:443` | No | 0 observed / 45 | PASS | PASS explicit env; retry timeout. |
+| R1 | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>20 × `CONNECT api.openai.com:443` | No | 0 observed / 44 | N/A | PASS model WS/HTTPS routing; 502 retries, supervisor timeout. |
+| R2 | 143 | 0 | No | 0 observed / 45 | N/A | Plain connection-refused errors; no observed fallback through 30 s, supervisor timeout. |
+| R3-lowercase | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>20 × `CONNECT api.openai.com:443` | No | 0 observed / 44 | N/A | PASS variable coverage; 502 retries, supervisor timeout. |
+| R3-uppercase | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>20 × `CONNECT api.openai.com:443` | No | 0 observed / 46 | N/A | PASS variable coverage; 502 retries, supervisor timeout. |
+| R3-all | 143 | 2 × `CONNECT chatgpt.com:443`<br>1 × `CONNECT github.com:443`<br>1 × `CONNECT api.github.com:443`<br>21 × `CONNECT api.openai.com:443` | No | 0 observed / 45 | N/A | PASS variable coverage; 502 retries, supervisor timeout. |
+| R5 aggregate | — | — | None observed | 0 observed / 315 | N/A | PASS sampled sockets; short-lived children can be missed. |
 
-### Imported: Muse 1.4.1-R4503.1 / launcher + Echo `muse exec`
+The native model client reports `wss://api.openai.com/v1/responses` proxy 502s,
+then falls back from WebSockets to HTTPS **through the same proxy**. This is a
+transport fallback, not evidence of direct egress. R2 reports `Connection refused
+(os error 61)` and keeps retrying. All turns stop at the 30 s supervisor timeout
+with SIGTERM/143; no natural terminal error exit was obtained. The bounded R2
+observation does not certify retries beyond that interval.
 
-Credit: **tb-muse (ivan-tb-muse)**, D8-muse-acceptance.md and D8-muse-results.md,
-2026-10-02 05:2x–05:3xZ. These are historical results, not reruns under the new
-protocol. Their sandbox denied outbound connects without SIGKILL, unified-log
-denials were invisible, HOME was unchanged, and XDG was isolated. Consequently
-SIGKILL was **not measured**. Preserve the reported observations, not a claim
-that the current safety/detector method was used.
+R4's six mismatches are all null; no hostile/reserved extras survived. R4b's six
+values match exactly. The first R4/R4b supervisor recorded SIGKILL *attempts* on
+already exited zombie roots; actual wait status was SIGTERM/143. The runner now
+excludes zombies from descendant sampling and names forced-kill attempts
+explicitly. These supervisor attempts are not sandbox-denial evidence.
 
-| Row | Exit | Sink requests | SIGKILL | Non-loopback sockets reported | Env verdict | Behavior |
-|---|---|---|---|---|---|---|
-| R0 Echo | 0 | 0 | Not measured | 0 | N/A | Offline turn completed. |
-| R1 launcher update | 1 | 2 × CONNECT api.meta.ai:443 | Not measured | 0 | N/A | Launcher curl used sink; synchronous 502 stopped update. |
-| R2 closed loopback proxy | 1 | 0 | Not measured | 0 | N/A | curl connection refusal twice; no fallback observed. |
-| R3a / R3b / R3c | 1 each | 2 each | Not measured | 0 | N/A | Lowercase-only, uppercase-only, ALL_PROXY-only reached sink (historical protocol). |
-| R4 MCP | 0 | 0 | Not measured | 0 | FAIL | Fixed child allowlist omits all six values; hostile values absent too. |
-| R4b explicit MCP env | 0 | 0 | Not measured | 0 | Partial mitigation | Explicit HTTPS_PROXY and NO_PROXY arrived; all-six-value fallback was not tested. |
-| R5 across tested rows | — | — | Not measured | 0 | N/A | No non-loopback sockets reported. |
-| R7 tools/hooks | — | — | Not measured | Unverified | Unverified | Echo provider called no tools; hooks not reported. |
+All Codex turns also warn that the code-mode companion executable could not be
+started. Only the selected Codex executable is exempted from operator HOME
+reads, so the companion path is inaccessible; this warning does not verify its
+presence or absence. Code-mode and tool-child paths are unverified.
 
-### Imported: Muse 1.4.2-R4684.1 / launcher + Echo `muse exec`
+Proposal: **needs adapter `codex-env-v1`** (proposed identity): explicit six-value
+MCP server env injection. Generic-env-v1 routes the observed model WS/HTTPS and
+startup clients; automatic MCP inheritance fails. Hook/tool scopes remain
+unverified.
 
-Same source and detector/isolation limitations; do not infer unreported rows.
+### Imported final D8: Muse / `muse exec` and launcher
 
-| Row | Exit | Sink requests | SIGKILL | Non-loopback sockets reported | Env verdict | Behavior |
-|---|---|---|---|---|---|---|
-| R0 / R1 / R2 | 0 / 1 / 1 | 0 / 2 / 0 | Not measured | 0 / 0 / 0 | N/A | D8 reports behavior identical to 1.4.1. |
-| R4 MCP | 0 | 0 | Not measured | 0 | FAIL | Same fixed allowlist; none of six proxy values inherited. |
-| R4b / R3 | — | — | Not measured | Unverified | Unverified | Not separately reported for this build. |
-| R5 across tested rows | — | — | Not measured | 0 | N/A | No non-loopback sockets reported. |
-| R7 tools/hooks | — | — | Not measured | Unverified | Unverified | Not exercised/reported. |
+Credit: **tb-muse (ivan-tb-muse)**. Ivan's final decision is **D8 = (A): supported
+with `muse-env-v1`**. No Muse process was rerun here.
 
-D8's R6 model-provider row was not run for either Muse build; it awaits Ivan's
-approval. Launcher results do not verify the Muse binary's own HTTPS client.
-All scopes lacking current evidence remain `network_scope_unsupported`.
+Source reconciliation: the supplied `D8-muse-results.md`, reread after these
+runs, still has the earlier R6-pending text. The explicit final-results correction
+in `BRIEF-hv-r2.md` supersedes it. Earlier raw results describe
+**1.4.1-R4503.1 / launcher + Echo `muse exec`** and
+**1.4.2-R4684.1 / launcher + Echo `muse exec`**. The final model/hook summary
+has no per-build split; it must not be represented as a separate rerun of each
+build. Preserve that attribution limit when registering adapter evidence.
+
+| Row | Final result | Evidence / mitigation |
+|---|---|---|
+| R0 | PASS | Echo control completed offline. |
+| R1 | PASS | Launcher CONNECTs reached `api.meta.ai:443`; early per-build rows report two requests and exit 1 on 502. |
+| R2 | PASS | Closed loopback proxy produced connection refusal; early per-build rows report exit 1 and zero sink requests. |
+| R3 | PASS | Lowercase-only, uppercase-only, and ALL_PROXY-only reach the sink; early detailed coverage is for 1.4.1. |
+| R4 | FAIL as written | MCP child uses an allowlist; six values do not inherit. Both early builds report this. |
+| R4b | Mitigation works | MCP server `env` block is honored. Earlier raw file demonstrates HTTPS_PROXY and NO_PROXY; final correction confirms mitigation, without a six-value/per-build dump. |
+| R5 | PASS | No non-loopback sockets reported in tested scopes. |
+| R6 | PASS | Binary model client made **one CONNECT with no retry**. With proxy unreachable, SIGKILL controls exited **137**; Muse returned a plain transport error with **no SIGKILL**. Final summary omits model target and numeric Muse exit. |
+| R7a | FAIL as written | Hooks have an env allowlist and no env field; mitigation is wrapping the hook command with the patch. |
+| R7b | Open | Shell-tool coverage remains **#18 / TASK-261002-lfm3e9**. |
+
+Proposal: **needs adapter `muse-env-v1`**, as accepted by Ivan: inject MCP env and
+wrap hook commands. Shell-tool scope remains open; the imported final aggregate
+must be resolved to exact builds before claiming build-specific model/hook
+assurance. The earlier source's lack of SIGKILL measurement must not erase the
+final R6 control result, or be silently extended to other rows.
