@@ -38,7 +38,7 @@ lint-workflows:
 # Regenerate the contract vectors from the code; then paste the printed
 # blocks into spec/contract-appendix.md (the guard test compares them).
 vectors:
-	go run ./internal/contract/cmd/contract-vectors -write testdata/contract/vectors.json -markdown
+	go run -p 1 ./internal/contract/cmd/contract-vectors -write testdata/contract/vectors.json -markdown
 
 demo:
 	scripts/demo-two-egresses.sh

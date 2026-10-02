@@ -164,3 +164,24 @@ func TestRecordCopiesProbe(t *testing.T) {
 		t.Fatalf("record changed after caller mutation: %s", raw)
 	}
 }
+
+func TestRecordInheritedOrigin(t *testing.T) {
+	t.Parallel()
+	rec := bind("egress-a", digest, idA, binding.AssuranceCooperative).Record("inherited", nil)
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded binding.Record
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded != rec || decoded.Origin != "inherited" {
+		t.Fatalf("inherited record did not round-trip: %s", raw)
+	}
+	for _, forbidden := range []string{"endpoint", "env_patch", "127.0.0.1", "HTTP_PROXY"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("inherited record leaks %q: %s", forbidden, raw)
+		}
+	}
+}

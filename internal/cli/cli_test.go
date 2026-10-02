@@ -518,7 +518,7 @@ func TestExecDryRun(t *testing.T) {
 	code, stdout, _ = h.run("--json", "exec", "--dry-run", "egress-b", "--", "/usr/local/bin/claude")
 	m := decode(t, stdout)
 	b := m["binding"].(map[string]any)
-	if code != 0 || m["schema"] != "curator-network-exec-v1" || m["dry_run"] != true || b["profile_ref"] != "egress-b" || b["adapter_identity"].(map[string]any)["entrypoint"] != "claude" || b["probe"].(map[string]any)["connect"] != "skipped" {
+	if code != 0 || m["schema"] != "curator-network-exec-v1" || m["dry_run"] != true || b["profile_ref"] != "egress-b" || b["origin"] != "explicit" || b["adapter_identity"].(map[string]any)["entrypoint"] != "claude" || b["probe"].(map[string]any)["connect"] != "skipped" {
 		t.Fatalf("json dry run = %v", m)
 	}
 	if _, leaks := b["env_patch"]; leaks {

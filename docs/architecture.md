@@ -59,7 +59,7 @@ test (two concurrent launches through two egresses, real binaries) is
    │                └── ~/.curator/network.confirmations.json ──► confirm.Ledger
    ▼
  resolve.Resolve(file, ledger, req)
-   │  explicit → runtime-default → project-default → operator-default; else UNMANAGED (empty patch)
+   │  explicit → inherited → runtime-default → project-default → operator-default; else UNMANAGED (empty patch)
    │  allowed set → exists → assurance → confirmed at digest → engine hosts covered
    ▼
  probe.Dialer.Probe(ctx, {endpoint, probe_target, timeout})      ← the only network call
@@ -265,7 +265,7 @@ three probe facts are not lost (TODO(decision)).
 
 **N-B, `curator run --network`.** After the ordinary environment composition
 and before spawn: `cat, err := catalog.Load(env)`; refuse on error;
-`res, err := cat.Resolve(resolve.Request{Explicit: flag, RuntimeDefault: …,
+`res, err := cat.Resolve(resolve.Request{Explicit: flag, Inherited: persistedParentRef, RuntimeDefault: …,
 ProjectDefault: …, Allowed: hostSet, EngineHosts: engines})`; on
 `res.Managed`, `probe.Dialer{}.Probe`, build the `binding.Binding` with the
 launcher's `AdapterIdentity{Adapter: envpatch.AdapterGeneric, Harness:
@@ -277,7 +277,12 @@ proxy variables travel as owned literals (`env_literals`): `b.EnvPatch.SetLitera
 every process-creation path (spawn, retry, resume, recursive children). At
 resume or reattach: `binding.CheckReattach(recorded, fresh, binding.EventReattach,
 perSessionRoute)` refuses drift and scope changes per N7; on a running host,
-`binding.EventNewAssignment`. Run manifests keep `binding.Record`. Origins for
+`binding.EventNewAssignment`. Run manifests keep `binding.Record`.
+`resolve.OriginInherited` is the parent reference persisted by the process owner
+at reservation and passed as `Request.Inherited`; it is re-resolved on the
+child's host, subject to that host's allowed set and confirmations, never
+inferred from env or proxy values (decided tb-R148 D2). Explicit selection
+overrides inheritance; inheritance overrides all defaults. Origins for
 C2 are `resolve.OriginRuntimeDefault` (per-binding `network`) and
 `resolve.OriginProjectDefault` (`spawn.network.default`); the file's `default`
 is `operator-default`. A router's CandidateResolver uses `resolve.Select` (a

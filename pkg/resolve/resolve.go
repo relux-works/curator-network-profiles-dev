@@ -17,6 +17,7 @@ type Origin string
 
 const (
 	OriginExplicit        Origin = "explicit"
+	OriginInherited       Origin = "inherited"
 	OriginRuntimeDefault  Origin = "runtime-default"
 	OriginProjectDefault  Origin = "project-default"
 	OriginOperatorDefault Origin = "operator-default"
@@ -30,10 +31,15 @@ type Selection struct {
 }
 
 // Request carries the candidate references in precedence order and the
-// caller's constraints. The operator default is read from the file.
+// caller's constraints. The operator default is read from the file; inherited
+// references are supplied by the process owner, never discovered from env.
 type Request struct {
 	// Explicit is `--network <name>`.
 	Explicit string
+	// Inherited is the parent's resolved reference persisted by the process
+	// owner at reservation. Resolve looks it up afresh on the child's host;
+	// proxy values and the parent's environment never supply this reference.
+	Inherited string
 	// RuntimeDefault is the runtime binding's `network` (LP-D2).
 	RuntimeDefault string
 	// ProjectDefault is the project's `spawn.network.default`.
@@ -73,10 +79,11 @@ type Result struct {
 	Assurance string
 }
 
-// Select applies the N4 precedence only: explicit → runtime default →
-// project default → operator default. It reports ok=false when nothing
-// selects a profile. It is the lookup a router's CandidateResolver needs
-// (spec N13) and performs no validation.
+// Select applies the N4 reference precedence only: explicit → inherited →
+// runtime default → project default → operator default. Resolve enforces
+// host locks and the allowed set on the selected reference. It reports
+// ok=false when nothing selects a profile. It is the lookup a router's
+// CandidateResolver needs (spec N13) and performs no validation.
 func Select(file *netprofile.File, req Request) (Selection, bool) {
 	assurance := req.RequiredAssurance
 	if assurance == "" {
@@ -87,6 +94,7 @@ func Select(file *netprofile.File, req Request) (Selection, bool) {
 		origin Origin
 	}{
 		{req.Explicit, OriginExplicit},
+		{req.Inherited, OriginInherited},
 		{req.RuntimeDefault, OriginRuntimeDefault},
 		{req.ProjectDefault, OriginProjectDefault},
 		{fileDefault(file), OriginOperatorDefault},

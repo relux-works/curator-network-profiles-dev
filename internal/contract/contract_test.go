@@ -62,6 +62,29 @@ func TestVectorSetShape(t *testing.T) {
 	if strings.Join(byID["D1"].SameAs, ",") != "D3,D5,D6,D8" {
 		t.Fatalf("D1 same_digest_as = %v", byID["D1"].SameAs)
 	}
+	if len(set.Record) != 3 || set.Record[2].Record.Origin != "inherited" || len(set.Resolve) != 6 {
+		t.Fatalf("inherited vector set is incomplete: %d records, %d resolves", len(set.Record), len(set.Resolve))
+	}
+	for _, v := range set.Resolve {
+		switch v.ID {
+		case "S1", "S6":
+			if v.Selection == nil || v.Selection.Origin != "inherited" || v.Selection.ProfileRef != "egress-a" || v.Digest != byID["D1"].Digest || v.Refusal != "" {
+				t.Fatalf("%s = %+v", v.ID, v)
+			}
+		case "S2":
+			if v.Selection == nil || v.Selection.Origin != "explicit" || v.Selection.ProfileRef != "egress-b" || v.Digest != byID["D2"].Digest || v.Refusal != "" {
+				t.Fatalf("S2 = %+v", v)
+			}
+		case "S3":
+			if v.Refusal != refusal.CodeProfileUnknown || v.Selection != nil || v.Digest != "" {
+				t.Fatalf("S3 = %+v", v)
+			}
+		case "S4", "S5":
+			if v.Refusal != refusal.CodeProfileDenied || v.Selection != nil || v.Digest != "" {
+				t.Fatalf("%s = %+v", v.ID, v)
+			}
+		}
+	}
 	for _, q := range set.Equality {
 		switch q.ID {
 		case "Q2":

@@ -1,6 +1,7 @@
 package resolve_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -8,6 +9,76 @@ import (
 	"github.com/relux-works/curator-network-profiles/pkg/refusal"
 	"github.com/relux-works/curator-network-profiles/pkg/resolve"
 )
+
+// Every ordered pair uses different known references so both the selected
+// origin and the winning reference must agree with N4.
+func TestResolveEveryPrecedencePair(t *testing.T) {
+	t.Parallel()
+	candidates := []struct {
+		origin resolve.Origin
+		set    func(*resolve.Request, *netprofile.File, string)
+	}{
+		{resolve.OriginExplicit, func(r *resolve.Request, _ *netprofile.File, ref string) { r.Explicit = ref }},
+		{resolve.OriginInherited, func(r *resolve.Request, _ *netprofile.File, ref string) { r.Inherited = ref }},
+		{resolve.OriginRuntimeDefault, func(r *resolve.Request, _ *netprofile.File, ref string) { r.RuntimeDefault = ref }},
+		{resolve.OriginProjectDefault, func(r *resolve.Request, _ *netprofile.File, ref string) { r.ProjectDefault = ref }},
+		{resolve.OriginOperatorDefault, func(_ *resolve.Request, f *netprofile.File, ref string) { f.Default = ref }},
+	}
+	for i, higher := range candidates {
+		for _, lower := range candidates[i+1:] {
+			t.Run(string(higher.origin)+" over "+string(lower.origin), func(t *testing.T) {
+				f := file(t)
+				f.Default = ""
+				req := resolve.Request{}
+				higher.set(&req, f, "egress-a")
+				lower.set(&req, f, "egress-b")
+				res, err := resolve.Resolve(f, ledgerAll(f), req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !res.Managed || res.Selection.ProfileRef != "egress-a" || res.Selection.Origin != higher.origin {
+					t.Fatalf("selection = %+v, want egress-a/%s", res.Selection, higher.origin)
+				}
+			})
+		}
+	}
+}
+
+func TestInheritedEmptySelection(t *testing.T) {
+	t.Parallel()
+	for _, ref := range []string{"", " \t\n\u00a0"} {
+		t.Run(ref, func(t *testing.T) {
+			res, err := resolve.Resolve(nil, nil, resolve.Request{Inherited: ref})
+			if err != nil || res.Managed || res.Selection.ProfileRef != "" || res.Selection.Origin != "" {
+				t.Fatalf("empty inherited reference = %+v, %v", res, err)
+			}
+		})
+	}
+}
+
+func TestInheritedReResolvesOnChildHost(t *testing.T) {
+	t.Parallel()
+	parent := file(t)
+	parentResult, err := resolve.Resolve(parent, ledgerAll(parent), resolve.Request{Explicit: "egress-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := mustParse(t, strings.ReplaceAll(catalog, ":18081", ":18083"))
+	res, err := resolve.Resolve(child, ledgerAll(child), resolve.Request{Inherited: parentResult.Selection.ProfileRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Profile.Endpoint != "http://127.0.0.1:18083" || res.Digest == parentResult.Digest || res.Selection.Origin != resolve.OriginInherited {
+		t.Fatalf("child did not re-resolve the reference locally: %+v", res)
+	}
+	raw, err := json.Marshal(res.Selection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"profile_ref":"egress-a","origin":"inherited","required_assurance":"cooperative"}` {
+		t.Fatalf("selection JSON = %s", raw)
+	}
+}
 
 const catalog = `schema = "relux-network-profiles-v1"
 default = "egress-b"
@@ -56,6 +127,20 @@ func TestResolveTable(t *testing.T) {
 		detail    string
 	}{
 		{name: "explicit wins", file: f, ledger: all, req: resolve.Request{Explicit: "egress-a", RuntimeDefault: "egress-b", ProjectDefault: "egress-b"}, ref: "egress-a", origin: resolve.OriginExplicit},
+		{name: "inherited wins over defaults", file: f, ledger: all, req: resolve.Request{Inherited: "egress-a", RuntimeDefault: "egress-b", ProjectDefault: "egress-b"}, ref: "egress-a", origin: resolve.OriginInherited},
+		{name: "explicit wins over inherited", file: f, ledger: all, req: resolve.Request{Explicit: "egress-a", Inherited: "egress-b"}, ref: "egress-a", origin: resolve.OriginExplicit},
+		{name: "invalid inherited name refused", file: f, ledger: all, req: resolve.Request{Inherited: " \t eg ress \n"}, code: refusal.CodeProfileUnknown},
+		{name: "inherited name trimmed", file: f, ledger: all, req: resolve.Request{Inherited: " \t egress-a \n"}, ref: "egress-a", origin: resolve.OriginInherited},
+		{name: "empty inherited falls through", file: f, ledger: all, req: resolve.Request{Inherited: "", RuntimeDefault: "egress-a"}, ref: "egress-a", origin: resolve.OriginRuntimeDefault},
+		{name: "whitespace inherited falls through", file: f, ledger: all, req: resolve.Request{Inherited: " \t\n\u00a0", RuntimeDefault: "egress-a"}, ref: "egress-a", origin: resolve.OriginRuntimeDefault},
+		{name: "unknown inherited is refused not skipped", file: f, ledger: all, req: resolve.Request{Inherited: "egress-z", RuntimeDefault: "egress-a"}, code: refusal.CodeProfileUnknown},
+		{name: "inherited on missing host catalog", file: nil, ledger: all, req: resolve.Request{Inherited: "egress-a"}, code: refusal.CodeProfileUnknown},
+		{name: "inherited unconfirmed is denied", file: f, ledger: resolve.None, req: resolve.Request{Inherited: "egress-a", RuntimeDefault: "egress-b"}, code: refusal.CodeProfileDenied, detail: "unconfirmed"},
+		{name: "inherited confirmed only at parent digest is denied", file: f, ledger: resolve.ConfirmedFunc(func(name, digest string) bool { return name == "egress-a" && digest == "sha256:parent" }), req: resolve.Request{Inherited: "egress-a"}, code: refusal.CodeProfileDenied, detail: "unconfirmed"},
+		{name: "allowed set admits inherited", file: f, ledger: all, req: resolve.Request{Inherited: "egress-a", Allowed: []string{" egress-a "}}, ref: "egress-a", origin: resolve.OriginInherited},
+		{name: "allowed set denies inherited without fallback", file: f, ledger: all, req: resolve.Request{Inherited: "egress-a", RuntimeDefault: "egress-b", Allowed: []string{"egress-b"}}, code: refusal.CodeProfileDenied, detail: "allowed set"},
+		{name: "empty allowed set denies inherited", file: f, ledger: all, req: resolve.Request{Inherited: "egress-a", Allowed: []string{}}, code: refusal.CodeProfileDenied, detail: "allowed set"},
+		{name: "allowed inherited check precedes existence", file: f, ledger: all, req: resolve.Request{Inherited: "egress-z", Allowed: []string{"egress-a"}}, code: refusal.CodeProfileDenied, detail: "allowed set"},
 		{name: "runtime default", file: f, ledger: all, req: resolve.Request{RuntimeDefault: "egress-a", ProjectDefault: "egress-b"}, ref: "egress-a", origin: resolve.OriginRuntimeDefault},
 		{name: "project default", file: f, ledger: all, req: resolve.Request{ProjectDefault: "egress-a"}, ref: "egress-a", origin: resolve.OriginProjectDefault},
 		{name: "operator default", file: f, ledger: all, req: resolve.Request{}, ref: "egress-b", origin: resolve.OriginOperatorDefault},

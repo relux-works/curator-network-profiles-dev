@@ -2,7 +2,7 @@
 
 Status: **DRAFT** (decided design, pre-implementation). Written 2026-09-22 from the proposal "самостоятельный эпик локальных сетевых профилей" and its enriched copy, which the operator keeps as Russian working notes outside the repositories, aligned with `skill-project-management/.specs/drafts/launch-profiles.md` (referenced below as *LP*, decisions LP-D1…D16). Working names are marked *proposed*. Facts marked *docs-confidence* were not verified on installed binaries and become errata before goldens.
 
-> **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `curator-network-profiles`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (proposed Decision 0019).
+> **Notes 2026-09-23.** Sequenced as roadmap milestone M7, after agents-infra is archived (`spec/track.md`). The library gets its own public repository `curator-network-profiles`. Defaults come from the operator layer of agent selection (`skill-project-management/.specs/drafts/agent-selection.md`) in addition to runtime bindings and the project. The patch reaches argv and env through the agents-management module (adopted Decision 0019).
 
 > **Notes 2026-09-27 (the command-line shape).** The operator adopted one command-line shape for the ecosystem (`wiki/research/cli-shaping-review.md`). For this module:
 > - the flag is `--network <name>` everywhere (was `--network-profile`);
@@ -69,7 +69,9 @@ Every process owner applies the binding immediately before spawn on every proces
 
 ### N3 Data model
 
-`NetworkSelection` (what the caller asked): `profile_ref`, `origin ∈ {explicit, runtime-default, project-default, operator-default}`, `required_assurance ∈ {cooperative, enforced}`.
+`NetworkSelection` (what the caller asked): `profile_ref`, `origin ∈ {explicit, inherited, runtime-default, project-default, operator-default}`, `required_assurance ∈ {cooperative, enforced}`.
+
+`inherited` means the process owner supplies the parent's resolved reference persisted at reservation, for fresh resolution on the child's host; the library never discovers it from the environment or proxy values.
 
 `NetworkProfile` (what the machine has), operator-owned file `~/.curator/network.toml`, one machine-owned catalog per plane, kept with the operator's other files under `~/.curator/`; the launcher and task-board never keep two copies. It was proposed as `$XDG_CONFIG_HOME/curator-network-profiles/network.json`; curator-playbook `spec/process-configuration.md` §2.3 moved it, in TOML because people edit it by hand. The table name `networks` is *proposed*: the word `profile` names only the Curator profile.
 
@@ -97,7 +99,7 @@ A `runtimes.toml` entry (LP-D2) MAY carry `network = "<name>"` as the default fo
 
 ### N4 Precedence and assurance
 
-Host locks and the allowed profile set → explicit selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.toml`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
+Host locks and the allowed profile set → explicit selection → inherited selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.toml`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
 
 ### N5 Applying the patch without side effects
 
@@ -134,7 +136,7 @@ A session-level "change network profile" operation is not in the MVP; it arrives
 ### N8 Integration surfaces
 
 - `curator run <runtime> --profile <p> --network egress-a -- <args>`: resolve, validate compatibility, bounded preflight, patch after the ordinary environment composition; admission and late checks unchanged.
-- `task-board spawn … --network egress-a` and `spawn.network.default` / per-binding `network`: the orchestrator selects a profile id from the allowed set, never a raw proxy URL. Inheritance by a child is **by reference plus re-resolution**, never by copying the orchestrator's environment; a parent on A may spawn a child on B.
+- `task-board spawn … --network egress-a` and `spawn.network.default` / per-binding `network`: the orchestrator selects a profile id from the allowed set, never a raw proxy URL. Inheritance by a child is **by reference plus re-resolution**, with `origin = inherited`, never by copying the orchestrator's environment; a parent on A may spawn a child on B.
 - Manifests: beside `RuntimeProvenance` and the Curator `profile.name`/`lock_sha256` (LP-D11), `network.profile_ref`, `profile_digest`, `adapter_identity`, `assurance`.
 
 ### N9 Tracked sessions (ax)
@@ -222,6 +224,8 @@ Closed by this document: flag name `--network-profile`; file location pattern (`
 Remaining for the implementing session (record why when choosing): the first managed backend (sing-box is the candidate).
 
 ## 7. Change log
+
+**2026-10-02 (tb-R148).** D2 decided (a): add `origin = inherited` for caller-supplied, persisted parent references re-resolved on the child's host, between explicit selection and runtime defaults (N3, N4, N8). D9 erratum: Decision 0019 is adopted, replacing the stale proposed status in the header notes.
 
 **2026-09-27.** Applied the command-line shape the operator adopted on 2026-09-27 (`wiki/research/cli-shaping-review.md`):
 

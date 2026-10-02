@@ -671,8 +671,12 @@ What run manifests and logs keep:
  assurance, origin, probe{tcp, connect, tls, checked_at}}
 ```
 
-`origin` is `explicit`, `runtime-default`, `project-default` or
-`operator-default`. `schema` MUST be `relux-network-binding-record-v1`
+`origin` is `explicit`, `inherited`, `runtime-default`, `project-default` or
+`operator-default`. N4 precedence is host locks / allowed set → explicit →
+inherited → runtime-default → project-default → operator-default.
+An inherited reference is supplied by the process owner, persisted from the
+parent at reservation, and re-resolved on the child's host. It MUST NOT be
+discovered from the environment or proxy values. `schema` MUST be `relux-network-binding-record-v1`
 (`binding.SchemaRecord`, set by `Binding.Record`). Every listed field MUST be
 present; `probe` MUST be a non-null object, including in plans and dry runs.
 Each of `probe.tcp`, `probe.connect`, `probe.tls` is `ok`, `skipped` or `failed`;
@@ -686,7 +690,7 @@ mutation cannot change the Record.
 An absent `network` key in a manifest = unmanaged. The Record MUST NOT carry
 the environment, the patch, an endpoint or a credential.
 
-Generated Record vectors (R1: observed; R2: unobserved) follow.
+Generated Record vectors (R1: observed; R2: unobserved; R3: inherited) follow.
 
 ```json vector=R1
 {
@@ -730,6 +734,32 @@ Generated Record vectors (R1: observed; R2: unobserved) follow.
     },
     "assurance": "cooperative",
     "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
+  }
+}
+```
+
+```json vector=R3
+{
+  "id": "R3",
+  "note": "an inherited reference re-resolved on the child's host, with no proxy values in the record",
+  "record": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "egress-a",
+    "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "inherited",
     "probe": {
       "tcp": "skipped",
       "connect": "skipped",
@@ -1015,6 +1045,147 @@ Missing or denied profiles are decided by resolve before this table.
   "event": "new-launch",
   "per_session_route": false,
   "outcome": "launch"
+}
+```
+
+### 3.7 Selection and inheritance (spec N3, N4, N8)
+
+Host locks / allowed set constrain every selected reference. The reference
+precedence is explicit → inherited → runtime-default → project-default →
+operator-default. Empty or whitespace-only references do not select; all
+selected references are trimmed before lookup. No selection is unmanaged.
+
+The caller MUST supply the inherited reference it persisted from the parent
+at reservation. The library MUST re-resolve it on the child's host, using
+that host's catalog and digest-bound confirmation. It MUST NOT derive a
+reference from proxy values or environment variables. Unknown inherited
+references fail with `network_profile_unknown`; unconfirmed or disallowed
+references fail with `network_profile_denied`, without falling back to any
+default. The allowed-set check precedes existence, including for inheritance.
+
+The following generated resolve vectors use the child's D1/D2 catalog.
+`allowed: null` permits any profile; `allowed: []` permits none. `confirmed`
+means confirmation at each profile's current child-host digest. R3 above
+shows the inherited origin in a manifest-safe Record.
+
+```json vector=S1
+{
+  "id": "S1",
+  "note": "inherited beats runtime, project and operator defaults; the inherited reference is trimmed",
+  "input": {
+    "explicit": "",
+    "inherited": " egress-a ",
+    "runtime_default": "egress-b",
+    "project_default": "egress-b",
+    "operator_default": "egress-b",
+    "allowed": null,
+    "confirmed": true
+  },
+  "selection": {
+    "profile_ref": "egress-a",
+    "origin": "inherited",
+    "required_assurance": "cooperative"
+  },
+  "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699"
+}
+```
+
+```json vector=S2
+{
+  "id": "S2",
+  "note": "explicit beats inherited",
+  "input": {
+    "explicit": "egress-b",
+    "inherited": "egress-a",
+    "runtime_default": "",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": null,
+    "confirmed": true
+  },
+  "selection": {
+    "profile_ref": "egress-b",
+    "origin": "explicit",
+    "required_assurance": "cooperative"
+  },
+  "digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328"
+}
+```
+
+```json vector=S3
+{
+  "id": "S3",
+  "note": "an inherited reference unknown on the child's host is refused, without falling back",
+  "input": {
+    "explicit": "",
+    "inherited": "missing",
+    "runtime_default": "egress-b",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": null,
+    "confirmed": true
+  },
+  "refusal": "network_profile_unknown"
+}
+```
+
+```json vector=S4
+{
+  "id": "S4",
+  "note": "an inherited reference unconfirmed on the child's host is denied",
+  "input": {
+    "explicit": "",
+    "inherited": "egress-a",
+    "runtime_default": "egress-b",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": null,
+    "confirmed": false
+  },
+  "refusal": "network_profile_denied"
+}
+```
+
+```json vector=S5
+{
+  "id": "S5",
+  "note": "the child's allowed set denies the inherited reference, without falling back",
+  "input": {
+    "explicit": "",
+    "inherited": "egress-a",
+    "runtime_default": "egress-b",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": [
+      "egress-b"
+    ],
+    "confirmed": true
+  },
+  "refusal": "network_profile_denied"
+}
+```
+
+```json vector=S6
+{
+  "id": "S6",
+  "note": "the child's allowed set admits the inherited reference",
+  "input": {
+    "explicit": "",
+    "inherited": "egress-a",
+    "runtime_default": "",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": [
+      "egress-a"
+    ],
+    "confirmed": true
+  },
+  "selection": {
+    "profile_ref": "egress-a",
+    "origin": "inherited",
+    "required_assurance": "cooperative"
+  },
+  "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699"
 }
 ```
 

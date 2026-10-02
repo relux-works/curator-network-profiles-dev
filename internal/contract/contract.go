@@ -19,6 +19,7 @@ import (
 	"github.com/relux-works/curator-network-profiles/pkg/envpatch"
 	"github.com/relux-works/curator-network-profiles/pkg/netprofile"
 	"github.com/relux-works/curator-network-profiles/pkg/refusal"
+	"github.com/relux-works/curator-network-profiles/pkg/resolve"
 )
 
 // Schema is the contract version the vectors belong to.
@@ -100,11 +101,32 @@ type RecordVector struct {
 	Record binding.Record `json:"record"`
 }
 
+// ResolveVector selects and validates references against the child's catalog.
+type ResolveVector struct {
+	ID        string             `json:"id"`
+	Note      string             `json:"note"`
+	Input     resolveInput       `json:"input"`
+	Selection *resolve.Selection `json:"selection,omitempty"`
+	Digest    string             `json:"digest,omitempty"`
+	Refusal   string             `json:"refusal,omitempty"`
+}
+
+type resolveInput struct {
+	Explicit        string   `json:"explicit"`
+	Inherited       string   `json:"inherited"`
+	RuntimeDefault  string   `json:"runtime_default"`
+	ProjectDefault  string   `json:"project_default"`
+	OperatorDefault string   `json:"operator_default"`
+	Allowed         []string `json:"allowed"` // null allows all, [] allows none
+	Confirmed       bool     `json:"confirmed"`
+}
+
 // Set is every vector of the appendix.
 type Set struct {
 	Schema      string           `json:"schema"`
 	Generator   string           `json:"generator"`
 	Record      []RecordVector   `json:"record"`
+	Resolve     []ResolveVector  `json:"resolve"`
 	Digest      []DigestVector   `json:"digest"`
 	EnvPatch    []EnvVector      `json:"envpatch"`
 	Equality    []EqualityVector `json:"equality"`
@@ -184,6 +206,37 @@ func Vectors() (Set, error) {
 	s.Record = []RecordVector{
 		{"R1", "a real preflight with a fixed observation time", boundA.Record("explicit", &binding.ProbeRecord{TCP: "ok", Connect: "ok", TLS: "ok", CheckedAt: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)})},
 		{"R2", "no probe supplied: all steps skipped and the time is zero", recordA},
+		{"R3", "an inherited reference re-resolved on the child's host, with no proxy values in the record", boundA.Record(string(resolve.OriginInherited), nil)},
+	}
+	resolveIn := []struct {
+		id, note string
+		in       resolveInput
+	}{
+		{"S1", "inherited beats runtime, project and operator defaults; the inherited reference is trimmed", resolveInput{Inherited: " egress-a ", RuntimeDefault: "egress-b", ProjectDefault: "egress-b", OperatorDefault: "egress-b", Confirmed: true}},
+		{"S2", "explicit beats inherited", resolveInput{Explicit: "egress-b", Inherited: "egress-a", Confirmed: true}},
+		{"S3", "an inherited reference unknown on the child's host is refused, without falling back", resolveInput{Inherited: "missing", RuntimeDefault: "egress-b", Confirmed: true}},
+		{"S4", "an inherited reference unconfirmed on the child's host is denied", resolveInput{Inherited: "egress-a", RuntimeDefault: "egress-b"}},
+		{"S5", "the child's allowed set denies the inherited reference, without falling back", resolveInput{Inherited: "egress-a", RuntimeDefault: "egress-b", Allowed: []string{"egress-b"}, Confirmed: true}},
+		{"S6", "the child's allowed set admits the inherited reference", resolveInput{Inherited: "egress-a", Allowed: []string{"egress-a"}, Confirmed: true}},
+	}
+	for _, r := range resolveIn {
+		f := &netprofile.File{Schema: Schema, Default: r.in.OperatorDefault, Networks: map[string]netprofile.Profile{"egress-a": profiles["D1"], "egress-b": profiles["D2"]}}
+		ledger := resolve.ConfirmedFunc(func(name, digest string) bool {
+			p, ok := f.Lookup(name)
+			return r.in.Confirmed && ok && digest == netprofile.Digest(p)
+		})
+		res, err := resolve.Resolve(f, ledger, resolve.Request{Explicit: r.in.Explicit, Inherited: r.in.Inherited, RuntimeDefault: r.in.RuntimeDefault, ProjectDefault: r.in.ProjectDefault, Allowed: r.in.Allowed})
+		v := ResolveVector{ID: r.id, Note: r.note, Input: r.in}
+		if err != nil {
+			code, ok := refusal.CodeOf(err)
+			if !ok {
+				return Set{}, fmt.Errorf("%s: %w", r.id, err)
+			}
+			v.Refusal = code
+		} else {
+			v.Selection, v.Digest = &res.Selection, res.Digest
+		}
+		s.Resolve = append(s.Resolve, v)
 	}
 	eqIn := []struct {
 		id, note string
@@ -275,6 +328,11 @@ func (s Set) Blocks() ([]Block, error) {
 		}
 	}
 	for _, v := range s.Record {
+		if err := add(v.ID, v); err != nil {
+			return nil, err
+		}
+	}
+	for _, v := range s.Resolve {
 		if err := add(v.ID, v); err != nil {
 			return nil, err
 		}

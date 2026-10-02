@@ -47,6 +47,134 @@
           "checked_at": "0001-01-01T00:00:00Z"
         }
       }
+    },
+    {
+      "id": "R3",
+      "note": "an inherited reference re-resolved on the child's host, with no proxy values in the record",
+      "record": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "egress-a",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "inherited",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
+      }
+    }
+  ],
+  "resolve": [
+    {
+      "id": "S1",
+      "note": "inherited beats runtime, project and operator defaults; the inherited reference is trimmed",
+      "input": {
+        "explicit": "",
+        "inherited": " egress-a ",
+        "runtime_default": "egress-b",
+        "project_default": "egress-b",
+        "operator_default": "egress-b",
+        "allowed": null,
+        "confirmed": true
+      },
+      "selection": {
+        "profile_ref": "egress-a",
+        "origin": "inherited",
+        "required_assurance": "cooperative"
+      },
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699"
+    },
+    {
+      "id": "S2",
+      "note": "explicit beats inherited",
+      "input": {
+        "explicit": "egress-b",
+        "inherited": "egress-a",
+        "runtime_default": "",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": null,
+        "confirmed": true
+      },
+      "selection": {
+        "profile_ref": "egress-b",
+        "origin": "explicit",
+        "required_assurance": "cooperative"
+      },
+      "digest": "sha256:b21dbf86d848612b34057485267e34c659636fd30f1726ee12ea0ff869cfd328"
+    },
+    {
+      "id": "S3",
+      "note": "an inherited reference unknown on the child's host is refused, without falling back",
+      "input": {
+        "explicit": "",
+        "inherited": "missing",
+        "runtime_default": "egress-b",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": null,
+        "confirmed": true
+      },
+      "refusal": "network_profile_unknown"
+    },
+    {
+      "id": "S4",
+      "note": "an inherited reference unconfirmed on the child's host is denied",
+      "input": {
+        "explicit": "",
+        "inherited": "egress-a",
+        "runtime_default": "egress-b",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": null,
+        "confirmed": false
+      },
+      "refusal": "network_profile_denied"
+    },
+    {
+      "id": "S5",
+      "note": "the child's allowed set denies the inherited reference, without falling back",
+      "input": {
+        "explicit": "",
+        "inherited": "egress-a",
+        "runtime_default": "egress-b",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": [
+          "egress-b"
+        ],
+        "confirmed": true
+      },
+      "refusal": "network_profile_denied"
+    },
+    {
+      "id": "S6",
+      "note": "the child's allowed set admits the inherited reference",
+      "input": {
+        "explicit": "",
+        "inherited": "egress-a",
+        "runtime_default": "",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": [
+          "egress-a"
+        ],
+        "confirmed": true
+      },
+      "selection": {
+        "profile_ref": "egress-a",
+        "origin": "inherited",
+        "required_assurance": "cooperative"
+      },
+      "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699"
     }
   ],
   "digest": [

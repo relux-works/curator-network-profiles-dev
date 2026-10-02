@@ -16,7 +16,7 @@ const doc = "schema = \"relux-network-profiles-v1\"\n[networks.egress-a]\nkind =
 func TestLoadAbsentUnconfirmedAndConfirmed(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	env := []string{"HOME=" + home}
+	env := []string{"HOME=" + home, "HTTPS_PROXY=http://127.0.0.1:18081", "TASK_BOARD_NETWORK=egress-a"}
 	c, err := catalog.Load(env)
 	if err != nil || c.File != nil {
 		t.Fatalf("absent: %+v %v", c, err)
@@ -62,6 +62,14 @@ func TestLoadAbsentUnconfirmedAndConfirmed(t *testing.T) {
 	res, err = c.Resolve(resolve.Request{Explicit: "egress-a"})
 	if err != nil || !res.Managed || res.Digest != netprofile.Digest(p) {
 		t.Fatalf("confirmed resolve: %+v %v", res, err)
+	}
+	res, err = c.Resolve(resolve.Request{Inherited: " egress-a "})
+	if err != nil || !res.Managed || res.Selection.Origin != resolve.OriginInherited || res.Digest != netprofile.Digest(p) {
+		t.Fatalf("inherited catalog resolution: %+v %v", res, err)
+	}
+	ambient, err := c.Resolve(resolve.Request{})
+	if err != nil || ambient.Managed {
+		t.Fatalf("environment inferred a selection: %+v %v", ambient, err)
 	}
 	if d, at, ok := c.ConfirmedAt("egress-a"); !ok || d != res.Digest || at.IsZero() {
 		t.Fatalf("ConfirmedAt = %s %v %v", d, at, ok)

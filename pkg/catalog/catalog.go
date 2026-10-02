@@ -62,7 +62,9 @@ func (c *Catalog) ConfirmedAt(name string) (digest string, at time.Time, ok bool
 	return e.Digest, e.ConfirmedAt, ok
 }
 
-// Resolve applies resolve.Resolve to this catalog.
+// Resolve applies resolve.Resolve to this host's catalog, including fresh
+// resolution of a caller-supplied inherited reference. Load never derives
+// an inherited reference from the supplied environment.
 func (c *Catalog) Resolve(req resolve.Request) (*resolve.Result, error) {
 	if c == nil {
 		return resolve.Resolve(nil, resolve.None, req)
