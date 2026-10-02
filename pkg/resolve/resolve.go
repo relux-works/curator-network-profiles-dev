@@ -51,7 +51,8 @@ type Request struct {
 	// an empty non-nil set allows none.
 	Allowed []string
 	// EngineHosts are the loopback engine hosts of this launch (spec N12);
-	// each must be covered by the profile's bypass_hosts.
+	// each must be covered by a proxy profile's bypass_hosts. Direct has
+	// no proxy and therefore nothing to bypass.
 	EngineHosts []string
 }
 
@@ -152,7 +153,7 @@ func Resolve(file *netprofile.File, ledger Confirmations, req Request) (*Result,
 		return nil, refusal.New(refusal.CodeProfileDenied, name, "unconfirmed: run `curator network confirm "+name+"` from a terminal")
 	}
 	for _, host := range req.EngineHosts {
-		if !profile.Covers(host) {
+		if profile.Kind != netprofile.KindDirect && !profile.Covers(host) {
 			return nil, refusal.New(refusal.CodeConfigurationConflict, name, "engine host "+netprofile.HostKey(host)+" is not in bypass_hosts")
 		}
 	}

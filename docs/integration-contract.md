@@ -42,7 +42,7 @@ Apply the patch **after filtering and every overlay**, updating full Env and own
 
 Advice §2.2(5): “The `set` half can carry proxy userinfo.” Raw structs can, but normalized profiles refuse it (N/pkg/netprofile/profile.go:202–203). Only normalized, confirmed resolution may produce a patch; serialize **Record only**, never Binding/Patch, endpoint or env. Owned literals are recorded/replayed and must be non-secret (0013:232–235,304–313). V1 permits credential mode `none`; future secrets stay in a gateway, behind a loopback endpoint (N6/N11).
 
-Plans/dry runs resolve, validate, bind and patch, skip network preflight, and record `skipped` (N10). Real launches probe the destination; a targetless probe proves TCP only.
+Plans/dry runs resolve, validate, bind and patch, skip network preflight, and record `skipped` (N10). Real proxy launches probe the destination; direct skips all probes; a targetless probe proves TCP only.
 
 ### Record and equality (N3, N7, N8)
 
@@ -72,7 +72,12 @@ A changed profile requires restoration or a genuinely new launch, never silent r
 
 Decision 0019 is **adopted** (S/decisions/0019-fragment-consumers-and-one-construction-site.md:5), but :117–120,172–175 leave environment composition with consumers pending a separate decision. Compose-first N-B remains viable. Keep owner-side final application until every later overlay rejects proxy names and final Env/OwnedEnv parity is proved.
 
-**Q7 — decided (tb-R148 D8):** support only verified exact harness/build/entrypoint/adapter tuples. Generic env support does not certify every claude/codex/qwen/pi/pinative/gemini/agy release. Muse returns `network_scope_unsupported` until its tuple is verified; verification is under way, and its interactive/permission support (L/README.md:12–20) is not proxy evidence. Leave its closed allowlist unchanged (A/pkg/agentic/systems/muse/env.go:16–42; env_test.go:283–290,483): a post-filter patch bypasses it. Verified harness-specific websocket/native overrides belong to that adapter, not the generic one (N5).
+**Q7 — decided (tb-R148 D8):** support only verified exact harness/build/entrypoint/adapter tuples. Generic env support does not certify every claude/codex/qwen/pi/pinative/gemini/agy release. Verified harness-specific websocket/native overrides belong to that adapter, not the generic one (N5).
+
+- **Status:** Muse stays `network_scope_unsupported` until D8 completes; R6 (the model client) and R7 (tool children) are pending.
+- **Requirement:** when supported, the Muse adapter is `muse-env-v1`: the generic patch plus injection of the set half into **each** MCP server entry's `env` block. Muse filters MCP stdio children to the fixed allowlist `HOME LANG LOGNAME MUSE_SESSION_ID PATH PWD SHELL SHLVL TERM TMPDIR USER`, so proxy variables do not reach them through ambient inheritance (D8 R4, R4b, 2026-10-02). An explicit per-server `env` block delivers them.
+- **Exclusion:** control-plane bridges that must reach their own route are excluded and configure their transport explicitly (N11).
+- **Placement:** injection happens in the launch plane's Muse plugin (D4 carrier, TASK-261002-143e84), never by rewriting shared MCP config.
 
 ### 2.2 task-board spawn and runner: `skill-project-management`
 
@@ -98,15 +103,9 @@ Primaries use session markers, not RUN_ID (H/codex_host.go:293–311; claude_hos
 
 #### Explicit direct
 
-**OPEN (tb-R148 D3); TODO(decision); recommended; Ivan decides:** defer opt-out for N-B; prefer a named `kind=direct` profile later, through a versioned contract change. V1 permits proxy profiles only (N/spec/contract-appendix.md:27,418–420,674–687); absence cannot be called direct.
+**Decided (tb-R148 D3): option (b), v0.2.0, named `kind = "direct"`.** A profiled parent can choose its own profile, another profile, or a named direct profile for any child, as an external decision module chooses. Direct is one more profile id in the host's allowed set; it retains the actual reference and origin. Absence remains unmanaged and preserves ambient env.
 
-| Option | Required change |
-| --- | --- |
-| Defer now | Keep N-B Selection/Patch/Record unchanged; no empty-patch opt-out. The inherited-origin amendment is adopted separately (D2). |
-| Named direct profile later | Version `kind=direct`, canonical digest/confirmation rules; retain actual named ref/origin. Unset-only patch; Record keeps ref, digest, cooperative assurance, skipped probe. |
-| Built-in selector | Add Selection mode, reserve syntax against names, version Record for absent/sentinel ref and direct-policy digest; explicit origin, unset-only patch, never omitted unmanaged Record. |
-
-Either future opt-out requires host authorization and does not guarantee OS-level directness. Do not insert a new direct kind or selector mode into normative v1.
+A direct profile forbids endpoint, bypass hosts and probe target, needs confirmation like every widening entry, and has a canonical digest of schema + kind + credential mode. Its patch is unset-only; its managed Record retains ref, digest, cooperative assurance and skipped TCP/CONNECT/TLS probes. Host authorization and confirmation still apply. Direct does not guarantee OS-level directness (N11). Binding equality and drift rules are unchanged.
 
 ### 2.3 tb-sessiond: `skill-project-management`
 
@@ -125,7 +124,7 @@ Also audit launcher release probes (L/cmd/curator-run/main.go:334,353 → A/inte
 **Lands in:** N-B. The Curator and launcher owners coordinate N-B; the launcher owner leads its implementation; consumer representatives advise. Ownership is unchanged (W/decisions.md:458–460).
 
 - Add `--network <name>` to L/internal/cli/cli.go `Invocation` (:162–195), `valueFlags` (:223–231), and SPEC §3; accept identifiers, not URLs.
-- Resolve/validate after admitted `plan.Build` (L/cmd/curator-run/main.go:255), before `ComposeAdmittedPlan` (:288), using the original operator env. Probe only a real supported direct launch. Refusals stop launch without fallback; tracked managed selection refuses before a source-host probe.
+- Resolve/validate after admitted `plan.Build` (L/cmd/curator-run/main.go:255), before `ComposeAdmittedPlan` (:288), using the original operator env. Probe only a real supported launch in untracked mode using a proxy profile; `kind = "direct"` skips probes. Refusals stop launch without fallback; tracked managed selection refuses before a source-host probe.
 - In `Compose`, after all overlays (:91–110), before materializing Env (L/internal/composition/composition.go:113), delete unset names case-insensitively from both env and literals, add set to both, reject managed proxy EnvNames/overlays, and recheck disjointness. Direct exec uses the patched env (L/internal/execution/execution.go:154); emit sanitized Record provenance.
 - Tracked mode carries only set literals and a proposed `works.relux.curator.network` Record extension (execution.go:52–58). **Refuse every managed tracked selection, including defaults, with `network_scope_unsupported` until §2.5's destination capability exists** (N9). No fallback or silent loss of tracking. Curator preparation (env resolve/install/repair) remains outside this patch (N5).
 
@@ -177,7 +176,7 @@ Rev 2 is adopted as D1. Consumer implementation remains DRAFT; the following dec
 | --- | --- |
 | D1 | decided (tb-R148 D1): integration contract rev 2 ADOPTED; DRAFT until implemented by consumers |
 | D2 / Q2 | decided (tb-R148 D2): option (a), `inherited` origin; durable reference plus re-resolution on the child's host; explicit → inherited → runtime → project → operator, subject to host locks / allowed set |
-| D3 / explicit direct | OPEN; TODO(decision); recommended; Ivan decides (§2.2) |
+| D3 / explicit direct | decided (tb-R148 D3): option (b), named `kind = "direct"`, v0.2.0 (§2.2) |
 | D4 / Q1 | decided (tb-R148 D4): typed `Network{Patch, Record}` fields, not callbacks (§2.1) |
 | D5 / suites | decided (tb-R148 D5): evidence records route ref and digest, or `ambient`, never proxy values (§2.2) |
 | D6 / Q5 | OPEN; TODO(decision); recommended; Ivan decides: ax extension and destination capability (§2.5) |
@@ -195,4 +194,6 @@ Q3 terminal retry drift and Q4 independent fresh sessions / equal-or-refuse live
 - Added suite separation/evidence decision and rollback/round-trip requirements; retained normalized credential refusal and Record-only serialization (advice §2.2(3–5)).
 - Added reconciliation, local selector resolution/protocol bump, profiled-startup refusal and session-patched preflight/assay; corrected the fresh-session premise (advice §2.3(1–4), Q4).
 - Replaced unanswered questions with card-C recommendations, deferred explicit direct, corrected mixed-case reservation, trust dispatch, N-A status, overlay migration and N-D dependency; replaced the ownership-transfer assumption with unchanged role ownership (Q1, Q5–Q7).
-- Recorded adoption and decisions tb-R148 D1, D2, D4, D5, D7–D10 on 2026-10-02; explicit direct (D3) and ax extension (D6) remain OPEN.
+- Recorded adoption and decisions tb-R148 D1, D2, D4, D5, D7–D10 on 2026-10-02; ax extension (D6) remains OPEN.
+
+- Recorded D3 option (b), named direct in v0.2.0, and D8 R4/R4b Muse per-server env injection requirements on 2026-10-02; Muse remains unsupported pending R6/R7.

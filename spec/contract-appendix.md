@@ -24,26 +24,34 @@ A profile is normalized before anything else looks at it:
 | Member | Rule |
 | --- | --- |
 | name | `^[a-z0-9][a-z0-9._-]{0,62}$`; the catalog key; **not** digested |
-| `kind` | `external-http-proxy` (the only kind of this version) |
-| `endpoint` | `http://host:port`: scheme `http`, explicit numeric port 1–65535, no userinfo, no path but `/`, no query, no fragment; scheme and host lowercased, IP literals canonicalized with `netip`, IPv4-mapped IPv6 unmapped to IPv4, IPv6 host in brackets, trailing `/` dropped |
-| `bypass_hosts` | each entry trimmed and lowercased; deduplicated; sorted in byte order; MUST contain `127.0.0.1`, `::1`, `localhost`; an empty entry, `*`, a comma or whitespace inside an entry, or a character outside `[a-z0-9._:[]/-]` is refused |
+| `kind` | `external-http-proxy` or `direct` |
+| `endpoint` | forbidden on direct, even empty; for external-http-proxy, `http://host:port`: scheme `http`, explicit numeric port 1–65535, no userinfo, no path but `/`, no query, no fragment; scheme and host lowercased, IP literals canonicalized with `netip`, IPv4-mapped IPv6 unmapped to IPv4, IPv6 host in brackets, trailing `/` dropped |
+| `bypass_hosts` | forbidden on direct, even empty; for external-http-proxy, each entry trimmed and lowercased; deduplicated; sorted in byte order; MUST contain `127.0.0.1`, `::1`, `localhost`; an empty entry, `*`, a comma or whitespace inside an entry, or a character outside `[a-z0-9._:[]/-]` is refused |
 | `credential_mode` | `none` (the only mode of this version; a credential in the endpoint is refused without being echoed) |
-| `probe_target` | optional `host:port`; **not** digested |
+| `probe_target` | forbidden on direct, even empty; for external-http-proxy, optional `host:port`; **not** digested |
 
-The digest covers exactly `schema`, `kind`, `endpoint`, `bypass_hosts` and
-`credential_mode`. It MUST NOT cover the name, `probe_target`, probe results,
+For a proxy profile the digest covers exactly `schema`, `kind`, `endpoint`, `bypass_hosts` and
+`credential_mode`. For direct it covers only `schema`, `kind` and `credential_mode`. It MUST NOT cover the name, `probe_target`, probe results,
 timestamps, lease ids or generations. A digest binds the configuration, not
 the proxy's actual egress.
 
 ### 1.2 Canonical form
 
-The digest input is one JSON object with these five keys in byte order and no
+For a proxy profile the digest input is one JSON object with these five keys in byte order and no
 other key, no whitespace, UTF-8, no HTML escaping, strings escaped as RFC 8259
 requires:
 
 ```text
 {"bypass_hosts":[<sorted entries>],"credential_mode":"none","endpoint":"<endpoint>","kind":"external-http-proxy","schema":"relux-network-profiles-v1"}
 ```
+
+Direct has exactly these three keys, in byte order:
+
+```text
+{"credential_mode":"none","kind":"direct","schema":"relux-network-profiles-v1"}
+```
+
+Adding or changing any profile, including direct, is a widening (it reroutes traffic) and MUST require `curator network confirm` at the current digest.
 
 ### 1.3 Algorithm
 
@@ -370,6 +378,33 @@ Digest: `sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699
 }
 ```
 
+**D9** — named direct: no endpoint, bypass_hosts or probe_target.
+
+Canonical bytes: `{"credential_mode":"none","kind":"direct","schema":"relux-network-profiles-v1"}`
+
+Digest: `sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6`
+
+```json vector=D9
+{
+  "id": "D9",
+  "note": "named direct: no endpoint, bypass_hosts or probe_target",
+  "name": "direct",
+  "input": {
+    "kind": "direct",
+    "endpoint": "",
+    "bypass_hosts": null
+  },
+  "normalized": {
+    "kind": "direct",
+    "endpoint": "",
+    "bypass_hosts": null,
+    "credential_mode": "none"
+  },
+  "canonical": "{\"credential_mode\":\"none\",\"kind\":\"direct\",\"schema\":\"relux-network-profiles-v1\"}",
+  "digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6"
+}
+```
+
 ## 2. EnvPatch
 
 A patch is two ordered operations, `unset` then `set`, applied by the host
@@ -388,7 +423,7 @@ HTTP_PROXY HTTPS_PROXY ALL_PROXY FTP_PROXY NO_PROXY
 http_proxy https_proxy all_proxy ftp_proxy no_proxy
 ```
 
-`set` is appended in this fixed order:
+`set` for a proxy profile is appended in this fixed order:
 
 ```text
 HTTP_PROXY=<endpoint>   HTTPS_PROXY=<endpoint>
@@ -399,6 +434,8 @@ NO_PROXY=<bypass_hosts joined by ",">   no_proxy=<the same>
 `ALL_PROXY`, websocket-specific variables and runtime settings are NOT set by
 the generic adapter; only a verified harness adapter adds them (spec N5). A
 harness adapter reports its own identity string in `adapter_identity.adapter`.
+
+For direct, `unset` is the identical list above and `set` is an empty array. No inherited proxy-family variable survives, and nothing is added.
 
 ### 2.2 Apply semantics
 
@@ -638,6 +675,82 @@ egress-a, `D2` is egress-b) or `unmanaged`.
 }
 ```
 
+**E9** — direct removes hostile ambient proxies, including mixed case, and sets nothing.
+
+```json vector=E9
+{
+  "id": "E9",
+  "note": "direct removes hostile ambient proxies, including mixed case, and sets nothing",
+  "profile": "D9",
+  "env": [
+    "PATH=/usr/bin",
+    "HTTPS_PROXY=http://127.0.0.1:1",
+    "http_proxy=http://127.0.0.1:1",
+    "all_proxy=http://127.0.0.1:1",
+    "NO_PROXY=*",
+    "FtP_PrOxY=http://127.0.0.1:1",
+    "Http_Proxy=http://127.0.0.1:1"
+  ],
+  "result": [
+    "PATH=/usr/bin"
+  ],
+  "patch": {
+    "unset": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "FTP_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "ftp_proxy",
+      "no_proxy"
+    ],
+    "set": []
+  }
+}
+```
+
+**E10** — a parent bound to egress-a explicitly selects direct for its child.
+
+```json vector=E10
+{
+  "id": "E10",
+  "note": "a parent bound to egress-a explicitly selects direct for its child",
+  "profile": "D9",
+  "env": [
+    "PATH=/usr/bin:/bin",
+    "HOME=/home/operator",
+    "HTTP_PROXY=http://127.0.0.1:18081",
+    "HTTPS_PROXY=http://127.0.0.1:18081",
+    "http_proxy=http://127.0.0.1:18081",
+    "https_proxy=http://127.0.0.1:18081",
+    "NO_PROXY=127.0.0.1,::1,localhost",
+    "no_proxy=127.0.0.1,::1,localhost"
+  ],
+  "result": [
+    "PATH=/usr/bin:/bin",
+    "HOME=/home/operator"
+  ],
+  "patch": {
+    "unset": [
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "FTP_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "ftp_proxy",
+      "no_proxy"
+    ],
+    "set": []
+  }
+}
+```
+
 ## 3. Binding, equality and the Record
 
 ### 3.1 Adapter identity
@@ -687,10 +800,12 @@ unobserved probe. Empty supplied statuses become `skipped`; unknown supplied
 statuses become `failed`. The supplied probe is copied, so subsequent caller
 mutation cannot change the Record.
 
+A direct selection MUST produce the same managed Record with its actual named `profile_ref`, direct digest, selected origin and cooperative assurance. All probe steps are `skipped` on a real launch too; direct has no preflight endpoint.
+
 An absent `network` key in a manifest = unmanaged. The Record MUST NOT carry
 the environment, the patch, an endpoint or a credential.
 
-Generated Record vectors (R1: observed; R2: unobserved; R3: inherited) follow.
+Generated Record vectors (R1: observed; R2: unobserved; R3: inherited; R4: direct) follow.
 
 ```json vector=R1
 {
@@ -760,6 +875,34 @@ Generated Record vectors (R1: observed; R2: unobserved; R3: inherited) follow.
     },
     "assurance": "cooperative",
     "origin": "inherited",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
+  }
+}
+```
+
+**R4** — managed direct keeps its named reference and digest; all probes skipped.
+
+```json vector=R4
+{
+  "id": "R4",
+  "note": "managed direct keeps its named reference and digest; all probes skipped",
+  "record": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "direct",
+    "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "explicit",
     "probe": {
       "tcp": "skipped",
       "connect": "skipped",
@@ -1048,6 +1191,92 @@ Missing or denied profiles are decided by resolve before this table.
 }
 ```
 
+**Q7** — a different direct name with the same digest is equal.
+
+```json vector=Q7
+{
+  "id": "Q7",
+  "note": "a different direct name with the same digest is equal",
+  "recorded": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "direct",
+    "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  "fresh": {
+    "profile_ref": "other-direct",
+    "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative"
+  },
+  "equal": true,
+  "event": "reattach",
+  "per_session_route": false,
+  "outcome": "reattach"
+}
+```
+
+**Q8** — resume cannot silently switch from direct to a proxy under the same name.
+
+```json vector=Q8
+{
+  "id": "Q8",
+  "note": "resume cannot silently switch from direct to a proxy under the same name",
+  "recorded": {
+    "schema": "relux-network-binding-record-v1",
+    "profile_ref": "direct",
+    "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative",
+    "origin": "explicit",
+    "probe": {
+      "tcp": "skipped",
+      "connect": "skipped",
+      "tls": "skipped",
+      "checked_at": "0001-01-01T00:00:00Z"
+    }
+  },
+  "fresh": {
+    "profile_ref": "direct",
+    "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+    "adapter_identity": {
+      "adapter": "generic-env-v1",
+      "harness": "exec",
+      "build": "",
+      "entrypoint": "codex"
+    },
+    "assurance": "cooperative"
+  },
+  "equal": false,
+  "event": "reattach",
+  "per_session_route": false,
+  "refusal": "network_profile_drift"
+}
+```
+
 ### 3.7 Selection and inheritance (spec N3, N4, N8)
 
 Host locks / allowed set constrain every selected reference. The reference
@@ -1189,7 +1418,75 @@ shows the inherited origin in a manifest-safe Record.
 }
 ```
 
+**S7** — explicit direct overrides a profiled parent within the allowed set.
+
+```json vector=S7
+{
+  "id": "S7",
+  "note": "explicit direct overrides a profiled parent within the allowed set",
+  "input": {
+    "explicit": "direct",
+    "inherited": "egress-a",
+    "runtime_default": "",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": [
+      "direct"
+    ],
+    "confirmed": true
+  },
+  "selection": {
+    "profile_ref": "direct",
+    "origin": "explicit",
+    "required_assurance": "cooperative"
+  },
+  "digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6"
+}
+```
+
+**S8** — direct is a widening entry requiring confirmation.
+
+```json vector=S8
+{
+  "id": "S8",
+  "note": "direct is a widening entry requiring confirmation",
+  "input": {
+    "explicit": "direct",
+    "inherited": "",
+    "runtime_default": "",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": null,
+    "confirmed": false
+  },
+  "refusal": "network_profile_denied"
+}
+```
+
+**S9** — direct obeys the host allowed set.
+
+```json vector=S9
+{
+  "id": "S9",
+  "note": "direct obeys the host allowed set",
+  "input": {
+    "explicit": "direct",
+    "inherited": "",
+    "runtime_default": "",
+    "project_default": "",
+    "operator_default": "",
+    "allowed": [
+      "egress-a"
+    ],
+    "confirmed": true
+  },
+  "refusal": "network_profile_denied"
+}
+```
+
 ## 4. Engine coverage (spec N12)
+
+Direct has no proxy and nothing to bypass. The resolver MUST skip engine-host coverage for direct, while still enforcing allowed sets, confirmation and cooperative assurance.
 
 A loopback engine host is **covered** by a profile iff `HostKey(host)` equals
 `HostKey(entry)` for some `bypass_hosts` entry, where `HostKey` lowercases,

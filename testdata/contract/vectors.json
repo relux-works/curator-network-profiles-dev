@@ -70,6 +70,29 @@
           "checked_at": "0001-01-01T00:00:00Z"
         }
       }
+    },
+    {
+      "id": "R4",
+      "note": "managed direct keeps its named reference and digest; all probes skipped",
+      "record": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "direct",
+        "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
+      }
     }
   ],
   "resolve": [
@@ -175,6 +198,57 @@
         "required_assurance": "cooperative"
       },
       "digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699"
+    },
+    {
+      "id": "S7",
+      "note": "explicit direct overrides a profiled parent within the allowed set",
+      "input": {
+        "explicit": "direct",
+        "inherited": "egress-a",
+        "runtime_default": "",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": [
+          "direct"
+        ],
+        "confirmed": true
+      },
+      "selection": {
+        "profile_ref": "direct",
+        "origin": "explicit",
+        "required_assurance": "cooperative"
+      },
+      "digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6"
+    },
+    {
+      "id": "S8",
+      "note": "direct is a widening entry requiring confirmation",
+      "input": {
+        "explicit": "direct",
+        "inherited": "",
+        "runtime_default": "",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": null,
+        "confirmed": false
+      },
+      "refusal": "network_profile_denied"
+    },
+    {
+      "id": "S9",
+      "note": "direct obeys the host allowed set",
+      "input": {
+        "explicit": "direct",
+        "inherited": "",
+        "runtime_default": "",
+        "project_default": "",
+        "operator_default": "",
+        "allowed": [
+          "egress-a"
+        ],
+        "confirmed": true
+      },
+      "refusal": "network_profile_denied"
     }
   ],
   "digest": [
@@ -422,6 +496,24 @@
         "D5",
         "D6"
       ]
+    },
+    {
+      "id": "D9",
+      "note": "named direct: no endpoint, bypass_hosts or probe_target",
+      "name": "direct",
+      "input": {
+        "kind": "direct",
+        "endpoint": "",
+        "bypass_hosts": null
+      },
+      "normalized": {
+        "kind": "direct",
+        "endpoint": "",
+        "bypass_hosts": null,
+        "credential_mode": "none"
+      },
+      "canonical": "{\"credential_mode\":\"none\",\"kind\":\"direct\",\"schema\":\"relux-network-profiles-v1\"}",
+      "digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6"
     }
   ],
   "envpatch": [
@@ -591,6 +683,72 @@
         "NO_PROXY=127.0.0.1,::1,localhost",
         "no_proxy=127.0.0.1,::1,localhost"
       ]
+    },
+    {
+      "id": "E9",
+      "note": "direct removes hostile ambient proxies, including mixed case, and sets nothing",
+      "profile": "D9",
+      "env": [
+        "PATH=/usr/bin",
+        "HTTPS_PROXY=http://127.0.0.1:1",
+        "http_proxy=http://127.0.0.1:1",
+        "all_proxy=http://127.0.0.1:1",
+        "NO_PROXY=*",
+        "FtP_PrOxY=http://127.0.0.1:1",
+        "Http_Proxy=http://127.0.0.1:1"
+      ],
+      "result": [
+        "PATH=/usr/bin"
+      ],
+      "patch": {
+        "unset": [
+          "HTTP_PROXY",
+          "HTTPS_PROXY",
+          "ALL_PROXY",
+          "FTP_PROXY",
+          "NO_PROXY",
+          "http_proxy",
+          "https_proxy",
+          "all_proxy",
+          "ftp_proxy",
+          "no_proxy"
+        ],
+        "set": []
+      }
+    },
+    {
+      "id": "E10",
+      "note": "a parent bound to egress-a explicitly selects direct for its child",
+      "profile": "D9",
+      "env": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator",
+        "HTTP_PROXY=http://127.0.0.1:18081",
+        "HTTPS_PROXY=http://127.0.0.1:18081",
+        "http_proxy=http://127.0.0.1:18081",
+        "https_proxy=http://127.0.0.1:18081",
+        "NO_PROXY=127.0.0.1,::1,localhost",
+        "no_proxy=127.0.0.1,::1,localhost"
+      ],
+      "result": [
+        "PATH=/usr/bin:/bin",
+        "HOME=/home/operator"
+      ],
+      "patch": {
+        "unset": [
+          "HTTP_PROXY",
+          "HTTPS_PROXY",
+          "ALL_PROXY",
+          "FTP_PROXY",
+          "NO_PROXY",
+          "http_proxy",
+          "https_proxy",
+          "all_proxy",
+          "ftp_proxy",
+          "no_proxy"
+        ],
+        "set": []
+      }
     }
   ],
   "equality": [
@@ -821,6 +979,82 @@
       "event": "new-launch",
       "per_session_route": false,
       "outcome": "launch"
+    },
+    {
+      "id": "Q7",
+      "note": "a different direct name with the same digest is equal",
+      "recorded": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "direct",
+        "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
+      },
+      "fresh": {
+        "profile_ref": "other-direct",
+        "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": true,
+      "event": "reattach",
+      "per_session_route": false,
+      "outcome": "reattach"
+    },
+    {
+      "id": "Q8",
+      "note": "resume cannot silently switch from direct to a proxy under the same name",
+      "recorded": {
+        "schema": "relux-network-binding-record-v1",
+        "profile_ref": "direct",
+        "profile_digest": "sha256:90781b39b78cd17c032c8f75f8936a6364958375b777466cb260336f9bc169e6",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative",
+        "origin": "explicit",
+        "probe": {
+          "tcp": "skipped",
+          "connect": "skipped",
+          "tls": "skipped",
+          "checked_at": "0001-01-01T00:00:00Z"
+        }
+      },
+      "fresh": {
+        "profile_ref": "direct",
+        "profile_digest": "sha256:1e5912de9e3459a12b7365f338d385c1c4c7b4a6b622598e17ed4004d7658699",
+        "adapter_identity": {
+          "adapter": "generic-env-v1",
+          "harness": "exec",
+          "build": "",
+          "entrypoint": "codex"
+        },
+        "assurance": "cooperative"
+      },
+      "equal": false,
+      "event": "reattach",
+      "per_session_route": false,
+      "refusal": "network_profile_drift"
     }
   ],
   "engine_hosts": [

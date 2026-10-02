@@ -43,7 +43,7 @@ The launch keeps its environment, credentials, runtime binding, model and workin
 | OpenCode documents proxy env and the need to bypass the proxy for its local TUI server | opencode docs (docs-confidence) |
 | Codex websocket dialer handles standard proxy env and proxy routes | codex source read (docs-confidence for the installed build) |
 | `curl` reads lowercase `http_proxy` only; `NO_PROXY=*` disables proxying; clients disagree on case and precedence | curl docs |
-| Local engines under `curator-inference-manager` listen on loopback; SSH-mode engine profiles connect to remote boxes by their own channel | LP-D7, LP-D8; agents-infra `model-harness` `mode = local\|ssh` |
+| Local engines under `curator-inference-manager` listen on loopback; Direct has no proxy and nothing to bypass, so its engine-host coverage check does not apply. SSH-mode engine profiles connect to remote boxes by their own channel | LP-D7, LP-D8; agents-infra `model-harness` `mode = local\|ssh` |
 
 ---
 
@@ -89,17 +89,24 @@ endpoint     = "http://127.0.0.1:18082"
 bypass_hosts = ["localhost", "127.0.0.1", "::1"]
 ```
 
-The file is edited through `curator network add|remove` or by hand. Adding a network profile is a widening entry, because it reroutes traffic: it takes effect only after `curator network confirm`, which refuses to run in an agent session (relux-works/curator-trust `spec/trust.md` §10).
+Kinds are `external-http-proxy` and `direct`. A named `kind = "direct"` profile has no `endpoint`, `bypass_hosts` or `probe_target`; these keys MUST be refused if present, even empty.
+
+```toml
+[networks.direct]
+kind = "direct"
+```
+
+The file is edited through `curator network add|remove` or by hand. Adding or changing any network profile, including direct, is a widening entry, because it reroutes traffic: it takes effect only after `curator network confirm`, which refuses to run in an agent session (relux-works/curator-trust `spec/trust.md` §10).
 
 `NetworkBinding` (what is applied): `profile_ref`, `profile_digest`, `adapter_identity` (harness build + entrypoint + plugin), `resolved_endpoint`, `assurance`, `env_patch`; later `lease_id`, `generation` for a managed gateway. Run manifests keep `profile_ref`, `profile_digest`, `adapter_identity`, `assurance` and the probe result; never the full environment or an endpoint carrying credentials. A digest binds the configuration, not the external proxy's actual egress.
 
-`env_patch` is two ordered operations, `unset` then `set`: `unset` removes every proxy-family variable the adapter knows, in both spellings, from the environment of the host that creates the process, and `set` writes the coherent set of N5; a patch is never only additions. `profile_digest` is computed over the normalized effective profile (schema version, kind, endpoint, sorted `bypass_hosts`, credential *mode* without any secret), never over probe results, lease ids or timestamps. Two bindings are **equal** when `profile_digest`, `adapter_identity` and `assurance` are equal; an equal profile name proves nothing.
+`env_patch` is two ordered operations, `unset` then `set`: `unset` removes every proxy-family variable the adapter knows, in both spellings, from the environment of the host that creates the process, and `set` writes the coherent set of N5; a patch is never only additions. `profile_digest` is computed over the normalized effective profile (schema version, kind, endpoint, sorted `bypass_hosts`, credential *mode* without any secret; direct includes only schema, kind and credential mode), never over probe results, lease ids or timestamps. Two bindings are **equal** when `profile_digest`, `adapter_identity` and `assurance` are equal; an equal profile name proves nothing.
 
 A `runtimes.toml` entry (LP-D2) MAY carry `network = "<name>"` as the default for that binding, and project configuration MAY carry `spawn.network.default = "<name>"` (decided 2026-09-22 after review): both are stable profile ids resolved on each machine and refused as `network_profile_unknown` where the machine has no such profile. An explicit `--network` overrides both.
 
 ### N4 Precedence and assurance
 
-Host locks and the allowed profile set → explicit selection → inherited selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.toml`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
+Host locks and the allowed profile set → explicit selection → inherited selection → runtime-binding default → project default → operator default (the machine's own default entry in `network.toml`). No selection at all keeps today's behaviour, reported as `unmanaged`, never as "direct". An explicit choice of a named direct profile is managed, authorized through the allowed set, confirmed, and recorded with its actual `profile_ref` and digest. A request for `enforced` on a machine that only has a cooperative backend is refused; the first release publishes `assurance = cooperative`.
 
 ### N5 Applying the patch without side effects
 
@@ -110,6 +117,8 @@ HTTP_PROXY=<endpoint>   HTTPS_PROXY=<endpoint>
 http_proxy=<endpoint>   https_proxy=<endpoint>
 NO_PROXY=<bypass list>  no_proxy=<bypass list>
 ```
+
+For `direct`, the patch is **unset-only**: remove the same proxy family case-insensitively and set nothing. A direct child sees no inherited proxy variables; unmanaged retains the ambient environment.
 
 `ALL_PROXY`, websocket-specific variables and runtime settings are added only by the harness adapter in the module once verified; nothing sets a dozen variables on faith. If native tool settings override env, the adapter applies a supported per-launch override or refuses `network_configuration_conflict`; it never rewrites shared configuration. Proxy variables are **owned literals** of the process owner, exactly like `ANTHROPIC_BASE_URL` in the claude `env-bundle` transport (LP-D3); in the ax document they travel as `env_literals`, never `env_names`. Curator's own preparation (`curator env resolve`, install, repair) is not proxied by default; proxying preparation is a separate explicit requirement.
 
@@ -147,13 +156,17 @@ The tracked transport serializes owned literals only, so a proxy set on the oute
 
 `resolve → validate profile + adapter → bounded proxy preflight → prepare binding → spawn → record outcome`. No scheduler, no daemon registration, no lease model in slice A. `curator network show` and a plan are read-only; `curator network check` validates without a network call, and `check --probe` is the explicit network call (the proposed `netrun doctor`); the launch preflight is deadline-bounded and uses no model credentials. Three distinct facts: an open TCP port; a successful CONNECT and TLS to the agreed target; an observed external IP for that test only. Failure codes: `network_profile_unknown`, `network_profile_denied`, `network_scope_unsupported`, `network_configuration_conflict`, `network_proxy_unreachable`, `network_proxy_auth_failed`, `network_profile_drift`. A missing, denied, unsupported or unreachable profile means the agent does not start; there is no hidden direct fallback and no automatic VPN or account switch; refusing to start is not an OS kill switch. A mid-run drop is reported to the run owner, who decides; nothing restarts the task unconditionally.
 
+For direct, preflight and `check --probe` skip all three steps (`tcp`, `connect`, `tls` = `skipped`); no endpoint is dialed.
+
 ### N11 Coverage boundary and secrets
+
+Direct is cooperative too: clearing proxy variables is not an OS guarantee of directness.
 
 The profile applies to the harness's supported network clients, which may include auth refresh, HTTP MCP and other requests, not only inference. Child commands may inherit the variables but their compliance is client behaviour, not an OS guarantee. A helper process the harness starts (a stdio MCP server, a tool bridge) inherits the patch like any child. When such a process must reach a control plane by its own route, its outgoing client is configured explicitly, never from the inherited proxy variables. That way the harness's egress and the bridge's transport are verified together, and a failing inference proxy never takes the control channel down with it. Outside the guarantee: a separately opened OAuth browser, already running services, raw sockets and UDP, tools executing on a remote EnvironmentHost. Upstream proxy passwords and WireGuard keys live in the gateway; the agent receives a loopback endpoint. A loopback listener without client authentication is not isolation between local processes. Logs record run/attempt, profile id, digest, adapter/build, probe result; never raw env, tokens, `Authorization`, `Proxy-Authorization` or request bodies.
 
 ### N12 Engines
 
-Local `curator-inference-manager` endpoints are loopback and MUST appear in every profile's `bypass_hosts`, otherwise a harness reaches its local model through the proxy. SSH-mode engine profiles connect through the engine provider's own channel and are not covered by the harness's proxy env. A future enforced sandbox treats a loopback engine as a local service to be allowed explicitly, not as "the internet".
+Local `curator-inference-manager` endpoints are loopback and MUST appear in every proxy profile's `bypass_hosts`, otherwise a harness reaches its local model through the proxy. SSH-mode engine profiles connect through the engine provider's own channel and are not covered by the harness's proxy env. A future enforced sandbox treats a loopback engine as a local service to be allowed explicitly, not as "the internet".
 
 ### N13 Routing
 
@@ -225,7 +238,7 @@ Remaining for the implementing session (record why when choosing): the first man
 
 ## 7. Change log
 
-**2026-10-02 (tb-R148).** D2 decided (a): add `origin = inherited` for caller-supplied, persisted parent references re-resolved on the child's host, between explicit selection and runtime defaults (N3, N4, N8). D9 erratum: Decision 0019 is adopted, replacing the stale proposed status in the header notes.
+**2026-10-02 (tb-R148).** D3 decided (b), v0.2.0: a named `kind = "direct"` with confirmation, an unset-only patch, managed Record and skipped probes (N3–N5, N10–N12). D2 decided (a): add `origin = inherited` for caller-supplied, persisted parent references re-resolved on the child's host, between explicit selection and runtime defaults (N3, N4, N8). D9 erratum: Decision 0019 is adopted, replacing the stale proposed status in the header notes.
 
 **2026-09-27.** Applied the command-line shape the operator adopted on 2026-09-27 (`wiki/research/cli-shaping-review.md`):
 

@@ -15,7 +15,7 @@ ACTIONLINT := github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 .PHONY: build test race vet fmt-check lint-workflows vectors demo check clean
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/curator-network
+	go build -p 1 -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/curator-network
 
 # -count=1: the contract guards in internal/contract read
 # spec/contract-appendix.md and testdata/contract/vectors.json, which live

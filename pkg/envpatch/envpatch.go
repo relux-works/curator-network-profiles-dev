@@ -61,7 +61,11 @@ func (Generic) Identity() string { return AdapterGeneric }
 // HTTPS_PROXY, http_proxy, https_proxy = endpoint and NO_PROXY, no_proxy
 // = bypass_hosts joined by "," in normalized order. ALL_PROXY, websocket
 // variables and runtime settings are never set by the generic adapter.
+// Direct profiles use the same unset family with an empty set.
 func (Generic) Patch(p netprofile.Profile) Patch {
+	if p.Kind == netprofile.KindDirect {
+		return Patch{Unset: UnsetNames(), Set: []Pair{}}
+	}
 	bypass := strings.Join(p.BypassHosts, ",")
 	return Patch{
 		Unset: UnsetNames(),

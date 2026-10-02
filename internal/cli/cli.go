@@ -76,6 +76,7 @@ const Usage = `usage: curator-network [--json] <verb> [arguments]
 
   list                                      profiles of ~/.curator/network.toml
   show <name>                               one profile, its digest and its patch
+  add <name> --direct
   add <name> --endpoint http://host:port    [--bypass h1,h2] [--probe-target host:port]
   remove <name>                             narrowing; applies immediately
   check [<name>|--all] [--probe]            [--target host:port] [--timeout 3s]

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -154,7 +155,9 @@ func (a *app) show(args []string) int {
 	fmt.Fprintf(out, "endpoint:        %s\n", p.Endpoint)
 	fmt.Fprintf(out, "bypass_hosts:    %s\n", strings.Join(p.BypassHosts, ", "))
 	target := p.ProbeTarget
-	if target == "" {
+	if p.Kind == netprofile.KindDirect {
+		target = "(none: direct skips all probes)"
+	} else if target == "" {
 		target = "(none: check --probe and the launch preflight test TCP only)"
 	}
 	fmt.Fprintf(out, "probe_target:    %s\n", target)
@@ -172,6 +175,7 @@ func (a *app) show(args []string) int {
 
 func (a *app) add(args []string) int {
 	fs := a.flagSet("add")
+	direct := fs.Bool("direct", false, "clear inherited proxies without setting a proxy")
 	endpoint := fs.String("endpoint", "", "proxy endpoint http://host:port")
 	bypass := fs.String("bypass", "", "comma-separated extra bypass hosts (localhost, 127.0.0.1 and ::1 are always added)")
 	target := fs.String("probe-target", "", "host:port for CONNECT+TLS probes")
@@ -180,7 +184,16 @@ func (a *app) add(args []string) int {
 		return code
 	}
 	name := pos[0]
-	if strings.TrimSpace(*endpoint) == "" {
+	conflict := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "endpoint" || f.Name == "bypass" || f.Name == "probe-target" {
+			conflict = true
+		}
+	})
+	if *direct && conflict {
+		return a.usage("add: --direct conflicts with --endpoint, --bypass and --probe-target")
+	}
+	if !*direct && strings.TrimSpace(*endpoint) == "" {
 		return a.usage("add: --endpoint is required")
 	}
 	var hosts []string
@@ -189,12 +202,11 @@ func (a *app) add(args []string) int {
 			hosts = append(hosts, h)
 		}
 	}
-	p, err := netprofile.Normalize(name, netprofile.Input{
-		Kind:        netprofile.KindExternalHTTPProxy,
-		Endpoint:    *endpoint,
-		BypassHosts: netprofile.WithRequiredBypass(hosts),
-		ProbeTarget: *target,
-	})
+	in := netprofile.Input{Kind: netprofile.KindDirect}
+	if !*direct {
+		in = netprofile.Input{Kind: netprofile.KindExternalHTTPProxy, Endpoint: *endpoint, BypassHosts: netprofile.WithRequiredBypass(hosts), ProbeTarget: *target}
+	}
+	p, err := netprofile.Normalize(name, in)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -313,6 +325,7 @@ func (a *app) remove(args []string) int {
 
 type checkResult struct {
 	Name      string        `json:"name"`
+	Kind      string        `json:"kind"`
 	Endpoint  string        `json:"endpoint"`
 	Digest    string        `json:"digest"`
 	Confirmed bool          `json:"confirmed"`
@@ -362,8 +375,10 @@ func (a *app) check(args []string) int {
 	for _, name := range names {
 		p, _ := cat.File.Lookup(name)
 		digest := netprofile.Digest(p)
-		r := checkResult{Name: name, Endpoint: p.Endpoint, Digest: digest, Confirmed: cat.Confirmed(name, digest), OK: true}
-		if *doProbe {
+		r := checkResult{Name: name, Kind: p.Kind, Endpoint: p.Endpoint, Digest: digest, Confirmed: cat.Confirmed(name, digest), OK: true}
+		if *doProbe && p.Kind == netprofile.KindDirect {
+			r.Probe = &probe.Result{TCP: probe.StatusSkipped, Connect: probe.StatusSkipped, TLS: probe.StatusSkipped, CheckedAt: a.deps.Now()}
+		} else if *doProbe {
 			t := p.ProbeTarget
 			if *target != "" {
 				t, _ = netprofile.NormalizeProbeTarget(*target)
@@ -381,7 +396,11 @@ func (a *app) check(args []string) int {
 	}
 	if !a.json {
 		for _, r := range results {
-			fmt.Fprintf(a.deps.Stdout, "%s: valid (digest %s), confirmed: %s\n", r.Name, netprofile.ShortDigest(r.Digest), yesNo(r.Confirmed))
+			fmt.Fprintf(a.deps.Stdout, "%s: valid (digest %s), confirmed: %s", r.Name, netprofile.ShortDigest(r.Digest), yesNo(r.Confirmed))
+			if r.Kind == netprofile.KindDirect {
+				fmt.Fprint(a.deps.Stdout, ", kind: direct")
+			}
+			fmt.Fprintln(a.deps.Stdout)
 			if r.Probe != nil {
 				fmt.Fprintf(a.deps.Stdout, "%s: probe %s: %s\n", r.Name, r.Endpoint, probeLine(r.Probe))
 			}

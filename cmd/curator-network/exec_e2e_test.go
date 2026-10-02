@@ -103,6 +103,11 @@ func newFixture(t *testing.T) *fixture {
 			t.Fatalf("add %s: %v\n%s", add.name, err, out)
 		}
 	}
+	addDirect := exec.Command(filepath.Join(binDir, "curator-network"), "add", "direct", "--direct")
+	addDirect.Env = base
+	if out, err := addDirect.CombinedOutput(); err != nil {
+		t.Fatalf("add direct: %v\n%s", err, out)
+	}
 	// A profile whose proxy is not listening, for the refusal case.
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -179,15 +184,18 @@ func errorsAs(err error, target **exec.ExitError) bool {
 	return ok
 }
 
-func TestTwoEgressesConcurrently(t *testing.T) {
+func TestTwoEgressesAndDirectConcurrently(t *testing.T) {
 	f := newFixture(t)
 	// Each worker sends both process results and startup errors; only this
 	// test goroutine invokes the testing API.
-	aResults, bResults := make(chan launch, 1), make(chan launch, 1)
+	aResults, bResults, directResults := make(chan launch, 1), make(chan launch, 1), make(chan launch, 1)
 	go func() { aResults <- f.launchRaw("exec", "egress-a", "--", "egress-client") }()
 	go func() { bResults <- f.launchRaw("exec", "egress-b", "--", "egress-client") }()
-	la, lb := <-aResults, <-bResults
-	for _, result := range []launch{la, lb} {
+	go func() {
+		directResults <- f.launchRaw("--json", "exec", "direct", "--", "egress-client", "--dump-proxy-env")
+	}()
+	la, lb, ld := <-aResults, <-bResults, <-directResults
+	for _, result := range []launch{la, lb, ld} {
 		if result.err != nil {
 			t.Fatalf("launch startup: %v", result.err)
 		}
@@ -202,6 +210,9 @@ func TestTwoEgressesConcurrently(t *testing.T) {
 		if !strings.HasPrefix(l.stderr, "curator-network: network=egress-") || !strings.Contains(l.stderr, "preflight=tcp ok, connect skipped, tls skipped") {
 			t.Errorf("launch stderr %q", l.stderr)
 		}
+	}
+	if ld.code != 0 || ld.stdout != "[]\n" || !strings.Contains(ld.stderr, "network=direct") || !strings.Contains(ld.stderr, "preflight=tcp skipped, connect skipped, tls skipped") {
+		t.Errorf("direct: code %d stdout %q stderr %q", ld.code, ld.stdout, ld.stderr)
 	}
 	want := []testproxy.Request{{Method: "GET", Target: "http://egress.invalid/"}}
 	if got := f.a.Requests(); !reflect.DeepEqual(got, want) {

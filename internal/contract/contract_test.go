@@ -62,7 +62,7 @@ func TestVectorSetShape(t *testing.T) {
 	if strings.Join(byID["D1"].SameAs, ",") != "D3,D5,D6,D8" {
 		t.Fatalf("D1 same_digest_as = %v", byID["D1"].SameAs)
 	}
-	if len(set.Record) != 3 || set.Record[2].Record.Origin != "inherited" || len(set.Resolve) != 6 {
+	if len(set.Record) != 4 || set.Record[2].Record.Origin != "inherited" || len(set.Resolve) != 9 {
 		t.Fatalf("inherited vector set is incomplete: %d records, %d resolves", len(set.Record), len(set.Resolve))
 	}
 	for _, v := range set.Resolve {
@@ -75,19 +75,26 @@ func TestVectorSetShape(t *testing.T) {
 			if v.Selection == nil || v.Selection.Origin != "explicit" || v.Selection.ProfileRef != "egress-b" || v.Digest != byID["D2"].Digest || v.Refusal != "" {
 				t.Fatalf("S2 = %+v", v)
 			}
+		case "S7":
+			if v.Selection == nil || v.Selection.Origin != "explicit" || v.Selection.ProfileRef != "direct" || v.Digest != byID["D9"].Digest || v.Refusal != "" {
+				t.Fatalf("S7 = %+v", v)
+			}
 		case "S3":
 			if v.Refusal != refusal.CodeProfileUnknown || v.Selection != nil || v.Digest != "" {
 				t.Fatalf("S3 = %+v", v)
 			}
-		case "S4", "S5":
+		case "S4", "S5", "S8", "S9":
 			if v.Refusal != refusal.CodeProfileDenied || v.Selection != nil || v.Digest != "" {
 				t.Fatalf("%s = %+v", v.ID, v)
 			}
 		}
 	}
+	if byID["D9"].Canonical != `{"credential_mode":"none","kind":"direct","schema":"relux-network-profiles-v1"}` || set.Record[3].Record.ProfileRef != "direct" || set.Record[3].Record.Probe.TCP != "skipped" {
+		t.Fatal("direct vectors incomplete")
+	}
 	for _, q := range set.Equality {
 		switch q.ID {
-		case "Q2":
+		case "Q2", "Q8":
 			if q.Refusal != refusal.CodeProfileDrift || q.Equal {
 				t.Fatalf("Q2 = %+v", q)
 			}
@@ -99,7 +106,7 @@ func TestVectorSetShape(t *testing.T) {
 			if q.Outcome != "set-per-session" {
 				t.Fatalf("Q4 = %+v", q)
 			}
-		case "Q1":
+		case "Q1", "Q7":
 			if !q.Equal || q.Outcome != "reattach" {
 				t.Fatalf("Q1 = %+v", q)
 			}
@@ -111,6 +118,12 @@ func TestVectorSetShape(t *testing.T) {
 		}
 	}
 	for _, e := range set.EnvPatch {
+		if e.ID == "E9" && strings.Join(e.Result, "|") != "PATH=/usr/bin" {
+			t.Fatalf("%s retained proxies: %v", e.ID, e.Result)
+		}
+		if e.ID == "E10" && strings.Join(e.Result, "|") != "PATH=/usr/bin:/bin|HOME=/home/operator" {
+			t.Fatalf("E10 retained proxies: %v", e.Result)
+		}
 		if e.ID == "E7" && strings.Join(e.Env, "|") != strings.Join(e.Result, "|") {
 			t.Fatalf("E7 changed the environment")
 		}

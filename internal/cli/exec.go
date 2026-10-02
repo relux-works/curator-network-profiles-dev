@@ -19,12 +19,13 @@ import (
 )
 
 // exec is the slice-A launch path: resolve (explicit) → validate →
-// preflight (TCP always; CONNECT+TLS when probe_target is set) → bind →
+// preflight (proxy TCP; CONNECT+TLS when probe_target is set; direct skips) → bind →
 // Apply to the inherited environment → Deps.Exec. Any failure refuses
 // before exec; there is no fallback to direct. The command is resolved
 // through PATH of the inherited (unpatched) environment; the patch only
 // touches proxy variables, so both are the same PATH. Dry runs skip lookup
-// and preflight, and record all probe steps as skipped.
+// and preflight, and record all probe steps as skipped. Direct also skips
+// preflight on a real launch.
 func (a *app) exec(args []string) int {
 	sep := -1
 	for i, arg := range args {
@@ -70,9 +71,11 @@ func (a *app) exec(args []string) int {
 		if err != nil {
 			return a.usage("exec: " + err.Error())
 		}
-		pr, err = a.deps.Prober.Probe(a.ctx, probe.Request{Subject: name, Endpoint: res.Profile.Endpoint, Target: res.Profile.ProbeTarget, Timeout: *timeout})
-		if err != nil {
-			return a.fail(err)
+		if res.Profile.Kind != netprofile.KindDirect {
+			pr, err = a.deps.Prober.Probe(a.ctx, probe.Request{Subject: name, Endpoint: res.Profile.Endpoint, Target: res.Profile.ProbeTarget, Timeout: *timeout})
+			if err != nil {
+				return a.fail(err)
+			}
 		}
 	}
 	entrypoint := filepath.Base(command[0])

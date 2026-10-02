@@ -282,6 +282,10 @@ func renderBlock(prof netprofile.Profile) string {
 	}
 	var b strings.Builder
 	b.WriteString("[networks." + key + "]\n")
+	if prof.Kind == netprofile.KindDirect {
+		b.WriteString("kind = \"direct\"\n")
+		return b.String()
+	}
 	b.WriteString("kind         = " + strconv.Quote(prof.Kind) + "\n")
 	b.WriteString("endpoint     = " + strconv.Quote(prof.Endpoint) + "\n")
 	quoted := make([]string, len(prof.BypassHosts))

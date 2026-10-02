@@ -34,7 +34,7 @@ Dependencies: the standard library and `github.com/pelletier/go-toml/v2`.
 | `pkg/binding` | `AdapterIdentity`, `Binding`, manifest-safe `Record`, `Equal`, the N7 table `CheckReattach` | envpatch, refusal |
 | `pkg/resolve` | `Selection{profile_ref, origin, required_assurance}`, N4 precedence (`Select`), `Resolve` with allowed set, existence, assurance, confirmation and engine coverage; the `unmanaged` result | netprofile, binding, refusal |
 | `pkg/probe` | bounded preflight: TCP → CONNECT → TLS (verification on, injectable roots), the `Prober` boundary | refusal |
-| `pkg/gateway` | `Backend` interface; `External` (external-http-proxy: returns the configured endpoint); `Managed` interface reserved for N-D | netprofile, refusal |
+| `pkg/gateway` | `Backend` interface; `External` (external-http-proxy: returns the configured endpoint); `Direct` (direct: no endpoint); `Managed` interface reserved for N-D | netprofile, refusal |
 | `pkg/catalog` | read-only facade for process owners: `Load(env)` = catalog + ledger, implements `resolve.Confirmations` | internal/store, internal/confirm |
 | `internal/store` | paths from the injected `HOME`, read, comment-preserving `Add`/`Remove` as text edits, re-parse before write, atomic write with backup | atomicfile, envutil, netprofile |
 | `internal/confirm` | the confirmation ledger and the agent-session guardrail | atomicfile, envutil |
@@ -235,10 +235,11 @@ document `curator-network-<verb>-v1` on success.
 | `list` | no | no | name, kind, endpoint, digest (short; full in JSON), confirmed, default marker |
 | `show <name>` | no | no | normalized profile, digest, confirmation state, the patch (unset names, set pairs) |
 | `add <name> --endpoint URL [--bypass h1,h2] [--probe-target h:p]` | no | catalog | inserts the required bypass hosts; refuses an existing name; prints the pending-confirmation notice |
+| `add <name> --direct` | no | catalog | named direct, kind-only table, unset-only patch; conflicts with endpoint/bypass/probe-target; requires confirmation |
 | `remove <name>` | no | catalog, ledger | narrowing, applies at once; drops the ledger entry |
 | `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | only with `--probe` | no | without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
 | `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes`; locks, revalidates the catalog and re-reads the ledger before writing |
-| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (TCP always; CONNECT+TLS with `probe_target`) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
+| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (proxy TCP; CONNECT+TLS with `probe_target`; direct skips all steps) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
 
 `Deps` is the only boundary: production main wires `os.Environ()`, the standard
 streams, the char-device test on stdin, `syscall.Exec`, `probe.Dialer` and
@@ -254,6 +255,8 @@ three probe facts are not lost (TODO(decision)).
   address and dials only loopback targets from an explicit map. Test host names
   use the reserved `.invalid` TLD and are answered by the proxy itself; the
   egress client exits 3 rather than dial directly when no proxy is configured.
+  Direct uses `--dump-proxy-env`, which prints proxy-family variables and exits
+  without parsing a target or dialing. The concurrent E2E covers A, B and direct.
 - Tests run with a temporary HOME (and XDG dirs) passed through `Deps.Env` or
   the child's `cmd.Env`; no test uses `t.Setenv`, sleeps or `t.Skip`.
 - Refusals carry no TOML contents, absolute paths, environment values or

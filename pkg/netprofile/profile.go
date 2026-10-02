@@ -34,9 +34,11 @@ const (
 	// Schema is the only accepted value of the top-level `schema` key and
 	// the schema version named inside every digest.
 	Schema = "relux-network-profiles-v1"
-	// KindExternalHTTPProxy is the only profile kind of slice A: an
+	// KindExternalHTTPProxy is an
 	// operator-configured HTTP proxy with CONNECT (spec N6).
 	KindExternalHTTPProxy = "external-http-proxy"
+	// KindDirect clears inherited proxy variables without supplying a proxy.
+	KindDirect = "direct"
 	// CredentialModeNone is the only credential mode of slice A. It is
 	// part of the digest so a later mode changes the digest.
 	CredentialModeNone = "none"
@@ -45,7 +47,7 @@ const (
 	FileName = "network.toml"
 )
 
-// RequiredBypassHosts must appear in every profile's bypass_hosts
+// RequiredBypassHosts must appear in every proxy profile's bypass_hosts
 // (spec N12: loopback engines never go through the proxy). Byte order.
 var RequiredBypassHosts = []string{"127.0.0.1", "::1", "localhost"}
 
@@ -58,7 +60,7 @@ type Profile struct {
 	// userinfo, path, query or fragment; IPv6 hosts in brackets.
 	Endpoint string `json:"endpoint"`
 	// BypassHosts is trimmed, lowercased, deduplicated and sorted in byte
-	// order; it always contains RequiredBypassHosts.
+	// order; proxy profiles contain RequiredBypassHosts; direct has none.
 	BypassHosts []string `json:"bypass_hosts"`
 	// ProbeTarget is an optional `host:port` used by `check --probe` and
 	// the launch preflight for the CONNECT+TLS steps. Not in the digest.
@@ -141,9 +143,14 @@ func Normalize(name string, in Input) (Profile, error) {
 	switch kind {
 	case "":
 		return Profile{}, invalid("kind is required")
+	case KindDirect:
+		if in.Endpoint != "" || in.BypassHosts != nil || in.ProbeTarget != "" {
+			return Profile{}, invalid("direct forbids endpoint, bypass_hosts and probe_target")
+		}
+		return Profile{Name: name, Kind: kind, CredentialMode: CredentialModeNone}, nil
 	case KindExternalHTTPProxy:
 	default:
-		return Profile{}, invalid("kind is not supported; only external-http-proxy exists")
+		return Profile{}, invalid("kind is not supported; expected external-http-proxy or direct")
 	}
 	endpoint, err := NormalizeEndpoint(in.Endpoint)
 	if err != nil {
@@ -379,13 +386,21 @@ func Canonical(p Profile) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(canonical{
+	var value any = canonical{
 		BypassHosts:    hosts,
 		CredentialMode: mode,
 		Endpoint:       p.Endpoint,
 		Kind:           p.Kind,
 		Schema:         Schema,
-	}); err != nil {
+	}
+	if p.Kind == KindDirect {
+		value = struct {
+			CredentialMode string `json:"credential_mode"`
+			Kind           string `json:"kind"`
+			Schema         string `json:"schema"`
+		}{mode, p.Kind, Schema}
+	}
+	if err := enc.Encode(value); err != nil {
 		// The struct holds only strings and a string slice; encoding
 		// cannot fail. A panic is the honest report of a broken build.
 		panic("netprofile: canonical encoding failed: " + err.Error())
@@ -417,9 +432,9 @@ type rawFile struct {
 
 type rawProfile struct {
 	Kind        string   `toml:"kind"`
-	Endpoint    string   `toml:"endpoint"`
+	Endpoint    *string  `toml:"endpoint"`
 	BypassHosts []string `toml:"bypass_hosts"`
-	ProbeTarget string   `toml:"probe_target"`
+	ProbeTarget *string  `toml:"probe_target"`
 }
 
 // Parse decodes a catalog strictly (unknown keys refused), normalizes
@@ -446,7 +461,18 @@ func Parse(data []byte) (*File, error) {
 	f := &File{Schema: raw.Schema, Default: strings.TrimSpace(raw.Default), Networks: map[string]Profile{}}
 	for _, name := range sortedKeys(raw.Networks) {
 		rp := raw.Networks[name]
-		p, err := Normalize(name, Input{Kind: rp.Kind, Endpoint: rp.Endpoint, BypassHosts: rp.BypassHosts, ProbeTarget: rp.ProbeTarget})
+		// Pointers retain field presence: even an empty forbidden key is invalid.
+		if strings.TrimSpace(rp.Kind) == KindDirect && (rp.Endpoint != nil || rp.BypassHosts != nil || rp.ProbeTarget != nil) {
+			return nil, refusal.New(refusal.CodeProfileInvalid, name, "direct forbids endpoint, bypass_hosts and probe_target")
+		}
+		var endpoint, target string
+		if rp.Endpoint != nil {
+			endpoint = *rp.Endpoint
+		}
+		if rp.ProbeTarget != nil {
+			target = *rp.ProbeTarget
+		}
+		p, err := Normalize(name, Input{Kind: rp.Kind, Endpoint: endpoint, BypassHosts: rp.BypassHosts, ProbeTarget: target})
 		if err != nil {
 			return nil, err
 		}

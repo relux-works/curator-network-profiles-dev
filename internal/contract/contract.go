@@ -55,11 +55,12 @@ type normed struct {
 // EnvVector applies the generic patch of a profile (or the unmanaged
 // patch) to an inherited environment.
 type EnvVector struct {
-	ID      string   `json:"id"`
-	Note    string   `json:"note"`
-	Profile string   `json:"profile"` // a DigestVector id, or "unmanaged"
-	Env     []string `json:"env"`
-	Result  []string `json:"result"`
+	ID      string          `json:"id"`
+	Note    string          `json:"note"`
+	Profile string          `json:"profile"` // a DigestVector id, or "unmanaged"
+	Env     []string        `json:"env"`
+	Result  []string        `json:"result"`
+	Patch   *envpatch.Patch `json:"patch,omitempty"`
 }
 
 // EqualityVector compares a recorded binding with a fresh one and runs
@@ -155,6 +156,7 @@ func Vectors() (Set, error) {
 		{"D6", "IPv4-mapped IPv6 is unmapped to canonical IPv4", "mapped", input{"external-http-proxy", "http://[::ffff:127.0.0.1]:18081", specBypass, ""}},
 		{"D7", "expanded IPv6 is compressed and bracketed", "ipv6", input{"external-http-proxy", "http://[0:0:0:0:0:0:0:1]:18081", specBypass, ""}},
 		{"D8", "hexadecimal IPv4-mapped IPv6 also becomes IPv4", "mapped-hex", input{"external-http-proxy", "http://[::FFFF:7F00:1]:18081/", specBypass, ""}},
+		{"D9", "named direct: no endpoint, bypass_hosts or probe_target", "direct", input{Kind: netprofile.KindDirect}},
 	}
 	for _, d := range digestIn {
 		p, err := netprofile.Normalize(d.name, netprofile.Input{Kind: d.in.Kind, Endpoint: d.in.Endpoint, BypassHosts: d.in.BypassHosts, ProbeTarget: d.in.ProbeTarget})
@@ -196,9 +198,16 @@ func Vectors() (Set, error) {
 		{"E6", "the order of untouched entries is kept; an entry without '=' has no name and is kept", "D1", []string{"Z=1", "NOEQUALS", "A=2", "https_proxy=http://wrong.invalid:1", "B=3"}},
 		{"E7", "unmanaged: no selection at all leaves the environment untouched, ambient proxies included", "unmanaged", []string{"HTTPS_PROXY=http://ambient.invalid:3128", "NO_PROXY=*", "PATH=/usr/bin"}},
 		{"E8", "a parent bound to egress-a spawns a child on egress-b: by reference and re-resolution, never by copying", "D2", boundToA},
+		{"E9", "direct removes hostile ambient proxies, including mixed case, and sets nothing", "D9", []string{"PATH=/usr/bin", "HTTPS_PROXY=http://127.0.0.1:1", "http_proxy=http://127.0.0.1:1", "all_proxy=http://127.0.0.1:1", "NO_PROXY=*", "FtP_PrOxY=http://127.0.0.1:1", "Http_Proxy=http://127.0.0.1:1"}},
+		{"E10", "a parent bound to egress-a explicitly selects direct for its child", "D9", boundToA},
 	}
 	for _, e := range envIn {
-		s.EnvPatch = append(s.EnvPatch, EnvVector{ID: e.id, Note: e.note, Profile: e.profile, Env: e.env, Result: patchOf(e.profile).Apply(e.env)})
+		v := EnvVector{ID: e.id, Note: e.note, Profile: e.profile, Env: e.env, Result: patchOf(e.profile).Apply(e.env)}
+		if e.profile == "D9" {
+			patch := patchOf(e.profile)
+			v.Patch = &patch
+		}
+		s.EnvPatch = append(s.EnvPatch, v)
 	}
 
 	boundA := binding.Binding{ProfileRef: "egress-a", ProfileDigest: s.Digest[0].Digest, AdapterIdentity: identity, Assurance: binding.AssuranceCooperative}
@@ -208,6 +217,8 @@ func Vectors() (Set, error) {
 		{"R2", "no probe supplied: all steps skipped and the time is zero", recordA},
 		{"R3", "an inherited reference re-resolved on the child's host, with no proxy values in the record", boundA.Record(string(resolve.OriginInherited), nil)},
 	}
+	direct := binding.Binding{ProfileRef: "direct", ProfileDigest: netprofile.Digest(profiles["D9"]), AdapterIdentity: identity, Assurance: binding.AssuranceCooperative, EnvPatch: patchOf("D9")}
+	s.Record = append(s.Record, RecordVector{"R4", "managed direct keeps its named reference and digest; all probes skipped", direct.Record("explicit", nil)})
 	resolveIn := []struct {
 		id, note string
 		in       resolveInput
@@ -218,9 +229,12 @@ func Vectors() (Set, error) {
 		{"S4", "an inherited reference unconfirmed on the child's host is denied", resolveInput{Inherited: "egress-a", RuntimeDefault: "egress-b"}},
 		{"S5", "the child's allowed set denies the inherited reference, without falling back", resolveInput{Inherited: "egress-a", RuntimeDefault: "egress-b", Allowed: []string{"egress-b"}, Confirmed: true}},
 		{"S6", "the child's allowed set admits the inherited reference", resolveInput{Inherited: "egress-a", Allowed: []string{"egress-a"}, Confirmed: true}},
+		{"S7", "explicit direct overrides a profiled parent within the allowed set", resolveInput{Explicit: "direct", Inherited: "egress-a", Allowed: []string{"direct"}, Confirmed: true}},
+		{"S8", "direct is a widening entry requiring confirmation", resolveInput{Explicit: "direct"}},
+		{"S9", "direct obeys the host allowed set", resolveInput{Explicit: "direct", Allowed: []string{"egress-a"}, Confirmed: true}},
 	}
 	for _, r := range resolveIn {
-		f := &netprofile.File{Schema: Schema, Default: r.in.OperatorDefault, Networks: map[string]netprofile.Profile{"egress-a": profiles["D1"], "egress-b": profiles["D2"]}}
+		f := &netprofile.File{Schema: Schema, Default: r.in.OperatorDefault, Networks: map[string]netprofile.Profile{"egress-a": profiles["D1"], "egress-b": profiles["D2"], "direct": profiles["D9"]}}
 		ledger := resolve.ConfirmedFunc(func(name, digest string) bool {
 			p, ok := f.Lookup(name)
 			return r.in.Confirmed && ok && digest == netprofile.Digest(p)
@@ -261,6 +275,23 @@ func Vectors() (Set, error) {
 				return Set{}, fmt.Errorf("%s: %w", q.id, err)
 			}
 			v.Refusal = code
+		} else {
+			v.Outcome = string(out)
+		}
+		s.Equality = append(s.Equality, v)
+	}
+	for _, tc := range []struct {
+		id, note string
+		fresh    binding.Binding
+	}{
+		{"Q7", "a different direct name with the same digest is equal", binding.Binding{ProfileRef: "other-direct", ProfileDigest: direct.ProfileDigest, AdapterIdentity: identity, Assurance: binding.AssuranceCooperative}},
+		{"Q8", "resume cannot silently switch from direct to a proxy under the same name", binding.Binding{ProfileRef: "direct", ProfileDigest: boundA.ProfileDigest, AdapterIdentity: identity, Assurance: binding.AssuranceCooperative}},
+	} {
+		recorded := direct.Record("explicit", nil)
+		v := EqualityVector{ID: tc.id, Note: tc.note, Recorded: recorded, Fresh: fresh{tc.fresh.ProfileRef, tc.fresh.ProfileDigest, tc.fresh.AdapterIdentity, tc.fresh.Assurance}, Equal: binding.RecordEqual(recorded, tc.fresh), Event: string(binding.EventReattach)}
+		out, err := binding.CheckReattach(recorded, tc.fresh, binding.EventReattach, false)
+		if err != nil {
+			v.Refusal, _ = refusal.CodeOf(err)
 		} else {
 			v.Outcome = string(out)
 		}

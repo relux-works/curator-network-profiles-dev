@@ -3,17 +3,21 @@
 // configured in its own environment (http.ProxyFromEnvironment) and
 // prints the body. It never dials directly: with no proxy configured for
 // the URL it exits 3 without resolving the name. --marker creates a file
-// first, so a test can prove whether the client ran at all.
+// first, so a test can prove whether the client ran at all. --dump-proxy-env
+// prints only proxy-family variables and exits without any network call.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -24,6 +28,7 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("egress-client", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	dump := fs.Bool("dump-proxy-env", false, "print proxy-family variables as JSON and exit without dialing")
 	marker := fs.String("marker", "", "create this file before doing anything else")
 	target := fs.String("url", "http://egress.invalid/", "URL to fetch through the environment's proxy")
 	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
@@ -35,6 +40,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "egress-client: marker: %v\n", err)
 			return 1
 		}
+	}
+	if *dump {
+		return dumpProxyEnv(os.Environ(), stdout)
 	}
 	u, err := url.Parse(*target)
 	if err != nil {
@@ -74,5 +82,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, string(body))
+	return 0
+}
+
+// dumpProxyEnv returns only the reserved proxy family, without dialing.
+func dumpProxyEnv(env []string, stdout io.Writer) int {
+	entries := []string{}
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY", "NO_PROXY":
+			entries = append(entries, entry)
+		}
+	}
+	sort.Strings(entries)
+	if err := json.NewEncoder(stdout).Encode(entries); err != nil {
+		return 1
+	}
 	return 0
 }

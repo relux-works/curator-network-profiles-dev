@@ -36,6 +36,9 @@ bin/curator-network add egress-a --endpoint http://127.0.0.1:18081
 bin/curator-network confirm egress-a                 # from an operator terminal, never from an agent session
 bin/curator-network check egress-a --probe           # the only network call: TCP, then CONNECT and TLS to probe_target
 bin/curator-network exec egress-a -- codex           # resolve → validate → preflight → patch → exec; no fallback to direct
+bin/curator-network add direct --direct             # named profile; no endpoint, bypass or probe target
+bin/curator-network confirm direct                  # requires the same operator confirmation
+bin/curator-network exec direct -- codex            # clear proxy variables, skip preflight; cooperative only
 ```
 
 Every verb accepts `--json`. Exit codes: 0 ok, 1 refusal (`curator-network: <code>: <detail>` on stderr), 2 usage. Adding a profile is a widening entry: it takes effect only after `confirm`, which refuses to run inside an agent session or without a terminal.

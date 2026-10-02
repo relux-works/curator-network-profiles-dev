@@ -1,6 +1,6 @@
 // Package gateway is the backend boundary of spec/network-profiles.md N6
-// and N14. Slice A has one backend, the operator-configured external HTTP
-// proxy, which only returns the configured endpoint. The managed gateway
+// and N14. External returns the operator-configured HTTP proxy endpoint;
+// Direct returns no endpoint. The managed gateway
 // of N-D (acquire / inspect / release, runtime-owned leases, generations)
 // is declared here as the Managed interface and not implemented.
 package gateway
@@ -16,7 +16,7 @@ import (
 type Backend interface {
 	// Kind is the profile kind this backend serves.
 	Kind() string
-	// Endpoint returns the `http://host:port` endpoint for the profile.
+	// Endpoint returns the proxy endpoint, or an empty endpoint for direct.
 	// For the external backend this is the configured endpoint; a managed
 	// backend would return the endpoint of an acquired lease.
 	Endpoint(ctx context.Context, p netprofile.Profile) (string, error)
@@ -61,9 +61,27 @@ func (External) Endpoint(_ context.Context, p netprofile.Profile) (string, error
 	return p.Endpoint, nil
 }
 
-// ForKind returns the backend serving kind; only external-http-proxy
-// exists in N-A.
+// Direct serves a profile with no proxy endpoint. It does not guarantee
+// OS-level directness: routing remains cooperative client behavior.
+type Direct struct{}
+
+func (Direct) Kind() string { return netprofile.KindDirect }
+
+func (Direct) Endpoint(_ context.Context, p netprofile.Profile) (string, error) {
+	if p.Kind != netprofile.KindDirect {
+		return "", refusal.New(refusal.CodeScopeUnsupported, p.Name, "profile kind is not served by the direct backend")
+	}
+	if p.Endpoint != "" || p.BypassHosts != nil || p.ProbeTarget != "" {
+		return "", refusal.New(refusal.CodeProfileInvalid, p.Name, "direct forbids endpoint, bypass_hosts and probe_target")
+	}
+	return "", nil
+}
+
+// ForKind returns the backend serving kind.
 func ForKind(kind string) (Backend, error) {
+	if kind == netprofile.KindDirect {
+		return Direct{}, nil
+	}
 	if kind == netprofile.KindExternalHTTPProxy {
 		return External{}, nil
 	}
