@@ -89,9 +89,27 @@ func Add(p Paths, prof netprofile.Profile) error {
 type Editor struct{ paths Paths }
 
 // Edit holds network.toml.lock across a catalog read/edit/write and any
-// related ledger operations in the callback. Contention refuses immediately;
-// a stale lock is never removed automatically. Cleanup runs on every return.
+// related ledger operations in the callback. It refuses symlinked catalogs
+// before invoking the callback; use WithCatalogLock for read-only catalog access.
 func Edit(p Paths, fn func(*Editor) error) error {
+	return WithCatalogLock(p, func() error {
+		info, err := os.Lstat(p.File)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot inspect catalog")
+		}
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot edit a symlink catalog; edit its target explicitly")
+		}
+		return fn(&Editor{paths: p})
+	})
+}
+
+// WithCatalogLock holds network.toml.lock across the callback, without
+// inspecting or mutating the catalog. Read-only catalog access may follow
+// symlinks while serializing related ledger writes with Edit. Contention
+// refuses immediately; a stale lock is never removed automatically. Cleanup
+// runs on every return. The callback must not acquire the same lock again.
+func WithCatalogLock(p Paths, fn func() error) error {
 	if err := atomicfile.EnsureDir(p.Dir); err != nil {
 		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot create catalog directory")
 	}
@@ -107,14 +125,7 @@ func Edit(p Paths, fn func(*Editor) error) error {
 	if err := lock.Close(); err != nil {
 		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot close edit lock")
 	}
-	info, err := os.Lstat(p.File)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot inspect catalog")
-	}
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot edit a symlink catalog; edit its target explicitly")
-	}
-	return fn(&Editor{paths: p})
+	return fn()
 }
 
 // Add appends a profile under the lock held by Edit.

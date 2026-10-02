@@ -429,7 +429,7 @@ func probeLine(r *probe.Result) string {
 // confirm records the current digest of each pending profile after the
 // operator, at a terminal and outside any agent session, types `yes`. The
 // prompt holds no lock; the catalog is revalidated and the ledger re-read
-// under store.Edit before recording exactly the digests shown.
+// under store.WithCatalogLock before recording exactly the digests shown.
 func (a *app) confirm(args []string) int {
 	fs := a.flagSet("confirm")
 	pos, code, ok := a.operands(fs, args, 0, -1)
@@ -511,7 +511,7 @@ func (a *app) confirm(args []string) int {
 		fmt.Fprintln(prompt)
 		return a.fail(refusal.New(refusal.CodeConfirmRefused, "operator", "not confirmed (the answer was not `yes`)"))
 	}
-	if err := store.Edit(paths, func(*store.Editor) error {
+	if err := store.WithCatalogLock(paths, func() error {
 		currentCatalog, err := os.ReadFile(paths.File)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot read")

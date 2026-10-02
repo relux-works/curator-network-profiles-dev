@@ -56,7 +56,7 @@ func assertConfirmUnlocked(t *testing.T, p store.Paths) {
 	if _, err := os.Lstat(p.File + ".lock"); !os.IsNotExist(err) {
 		t.Fatalf("confirm left an edit lock: %v", err)
 	}
-	if err := store.Edit(p, func(*store.Editor) error { return nil }); err != nil {
+	if err := store.WithCatalogLock(p, func() error { return nil }); err != nil {
 		t.Fatalf("cannot acquire edit lock after confirm: %v", err)
 	}
 }
@@ -66,6 +66,66 @@ func assertConfirmLocked(t *testing.T, p store.Paths) {
 	if _, err := os.Stat(p.File + ".lock"); err != nil {
 		t.Errorf("confirm write does not hold catalog edit lock: %v", err)
 	}
+}
+
+func TestConfirmSymlinkCatalog(t *testing.T) {
+	h := newHarness(t)
+	h.writeFile(twoProfiles)
+	p := confirmPaths(t, h)
+	target := p.File + ".target"
+	if err := os.Rename(p.File, target); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := filepath.Base(target)
+	if err := os.Symlink(linkTarget, p.File); err != nil {
+		t.Fatal(err)
+	}
+	beforeLink, err := os.Lstat(p.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTarget, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runConfirm(t, h, nil, func() time.Time {
+		assertConfirmLocked(t, p)
+		return h.now
+	})
+	if code != cli.ExitOK || stderr != "" {
+		t.Fatalf("confirm symlink catalog: %d %q", code, stderr)
+	}
+	ledger, err := confirm.Read(p.Ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := netprofile.Parse([]byte(twoProfiles))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, _ := file.Lookup("egress-a")
+	entry, ok := ledger.Entry("egress-a")
+	if !ok || entry.Digest != netprofile.Digest(profile) || !entry.ConfirmedAt.Equal(h.now) {
+		t.Fatalf("confirmed name/digest/time = %+v", entry)
+	}
+	afterLink, err := os.Lstat(p.File)
+	if err != nil || afterLink.Mode()&os.ModeSymlink == 0 || !os.SameFile(beforeLink, afterLink) {
+		t.Fatalf("catalog symlink replaced: %v", err)
+	}
+	if got, err := os.Readlink(p.File); err != nil || got != linkTarget {
+		t.Fatalf("catalog symlink changed: %q %v", got, err)
+	}
+	afterTarget, err := os.Stat(target)
+	if err != nil || !os.SameFile(beforeTarget, afterTarget) || beforeTarget.Mode() != afterTarget.Mode() || !beforeTarget.ModTime().Equal(afterTarget.ModTime()) {
+		t.Fatalf("catalog target replaced or modified: %v", err)
+	}
+	if data, err := os.ReadFile(target); err != nil || !bytes.Equal(data, []byte(twoProfiles)) {
+		t.Fatalf("catalog target bytes changed: %v", err)
+	}
+	if _, err := os.Lstat(p.Backup); !os.IsNotExist(err) {
+		t.Fatalf("confirm created a catalog backup: %v", err)
+	}
+	assertConfirmUnlocked(t, p)
 }
 
 func TestConfirmHeldCatalogLock(t *testing.T) {
@@ -197,7 +257,7 @@ func TestConfirmRereadsLedgerUnderLock(t *testing.T) {
 	code, _, stderr := runConfirm(t, h, func() {
 		// Simulate a cooperating editor updating another profile while the
 		// operator answers. Its new entry must survive this confirmation.
-		if err := store.Edit(p, func(*store.Editor) error {
+		if err := store.WithCatalogLock(p, func() error {
 			ledger := confirm.Empty()
 			ledger.Set("egress-b", "other-editor-digest", h.now)
 			return confirm.Write(p.Ledger, ledger)

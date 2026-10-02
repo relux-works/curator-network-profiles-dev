@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 	}
 	buildEnvironment := buildEnv(os.Environ(), filepath.Join(dir, "home"), caches[0], caches[1])
 	for _, b := range []struct{ name, pkg string }{{"curator-network", "."}, {"egress-client", "../../internal/testproxy/cmd/egress-client"}} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(dir, b.name), b.pkg)
+		cmd := exec.Command("go", "build", "-p", "1", "-o", filepath.Join(dir, b.name), b.pkg)
 		cmd.Env = buildEnvironment
 		if out, err := cmd.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "build %s: %v\n%s", b.name, err, out)

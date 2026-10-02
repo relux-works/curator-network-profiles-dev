@@ -122,21 +122,23 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   fsync + rename with mode 0600, the previous bytes go to `network.toml.bak`,
   and the directory is created 0700 when absent (an existing `~/.curator`
   keeps its mode: it is shared with other Curator files).
-- Edits refuse a symlinked catalog before reading or backing it up; atomic
-  writes also refuse symlink destinations, including backups and ledgers.
-  Read-only catalog loads may follow symlinks. Refusal never replaces the
-  link or modifies its target.
-- `store.Edit` holds the advisory `network.toml.lock` (O_CREATE|O_EXCL,
-  0600) across catalog read/edit/write and CLI add/remove/confirm ledger
-  operations. `Add`/`Remove` and CLI `confirm` use this same lock. A held catalog edit lock
-  refuses immediately
-  as `network_configuration_conflict`; every normal return removes the acquired
-  lock. A crash-stale lock has no CLI cleanup: after checking no edit is running,
+- Catalog mutation (`add`/`remove`) refuses a symlinked catalog before reading
+  or backing it up; atomic writes also refuse symlink destinations, including
+  backups and ledgers. Read-only catalog loads, including `confirm`, may follow
+  symlinks. `confirm` writes only the separate ledger and leaves the catalog
+  link and target unchanged. Refusal never replaces a link or modifies its target.
+- `store.WithCatalogLock` holds the advisory `network.toml.lock` (O_CREATE|O_EXCL,
+  0600) across its callback. `store.Edit` uses it for catalog read/edit/write and
+  CLI add/remove ledger operations; CLI `confirm` uses it for read-only catalog
+  access and ledger writes. `Add`/`Remove` and CLI `confirm` use this same lock.
+  A held catalog edit lock refuses immediately as `network_configuration_conflict`;
+  every normal return removes the acquired lock. A crash-stale lock has no CLI
+  cleanup: after checking no edit is running,
   the operator deletes `network.toml.lock` by hand. TODO(decision): whether to
   add a cleanup command.
 - CLI `confirm` prompts before taking the catalog edit lock. After `yes`,
-  `store.Edit` holds the lock from re-reading the catalog and ledger through
-  the atomic ledger write. A held lock uses the same immediate
+  `store.WithCatalogLock` holds the lock from re-reading the catalog and ledger
+  through the atomic ledger write. A held lock uses the same immediate
   `network_configuration_conflict` refusal as add/remove. The catalog bytes
   must still match the preview; any change (including comments, deletion or
   invalid TOML) refuses with `network_configuration_conflict` and sanitized
@@ -145,7 +147,8 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   Prompting first avoids holding a lock while a human waits or abandons the
   terminal, reducing the risk of a crash-stale lock; the trade-off is that an
   edit or held lock can require another confirm after the operator answers.
-  Lock cleanup runs on success, refusal and write failure through `store.Edit`.
+  Lock cleanup runs on success, refusal and write failure through
+  `store.WithCatalogLock`.
   Manual edits do not participate in this advisory lock and must not race the
   locked read/write interval.
 - CLI `add` refuses an existing name before touching its confirmation. It reads
