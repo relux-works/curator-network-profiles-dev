@@ -31,6 +31,12 @@ How each process owner applies the patch, where the binding is recorded, and how
 
 Per tb-R151 (2026-10-02 07:21Z), N-C1 is split: N-C1a (subagent spawn) needs D4 (TASK-261002-143e84) + v0.2.0 only; N-C1b (tb-sessiond hosts) follows M3 / LP Phase 0. N-C1 remains TASK-261002-re5ew4; N-B is TASK-261002-1g5dyh. Network-profile consumers get priority after the R131 top items. N-C2 needs M4 (operator layer and bindings). The Apiary tool bridge must keep its own transport outside the harness's profile (NP-N11).
 
+Launch-plane tracking for N-B / N-C1a (exact tuples and scope limits: `docs/integration-contract.md` §2.1):
+
+- **TASK-261002-11j2af:** allowlist `claude-code` 2.1.287 / exec (`claude -p`) with `generic-env-v1`; authenticated turns, hooks, tool children and interactive mode remain unverified.
+- **TASK-261002-2b6xcp:** implement required `codex-env-v1` for `codex-cli` 0.159.0 / exec: generic patch plus per-server MCP env injection, under tb-R151's priority; until it exists, `--network` refuses Codex (`network_scope_unsupported`).
+- **TASK-261002-14shh7:** implement `muse-env-v1` for Muse 1.4.1-R4503.1 / 1.4.2-R4684.1 after D4 (TASK-261002-143e84): per-server MCP env injection and hook-command wrapping; shell/tool-child gap remains TASK-261002-lfm3e9 / #18.
+
 ## Repository
 
 This repository, `curator-network-profiles` (created 2026-09-24, renamed from curator-network the same day; private until the operator decides its visibility, proposed public). The draft specification is `spec/network-profiles.md`.
