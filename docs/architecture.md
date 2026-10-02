@@ -127,16 +127,27 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
   Read-only catalog loads may follow symlinks. Refusal never replaces the
   link or modifies its target.
 - `store.Edit` holds the advisory `network.toml.lock` (O_CREATE|O_EXCL,
-  0600) across catalog read/edit/write and CLI add/remove ledger operations.
-  `Add`/`Remove` use this same lock. A held catalog edit lock refuses immediately
+  0600) across catalog read/edit/write and CLI add/remove/confirm ledger
+  operations. `Add`/`Remove` and CLI `confirm` use this same lock. A held catalog edit lock
+  refuses immediately
   as `network_configuration_conflict`; every normal return removes the acquired
   lock. A crash-stale lock has no CLI cleanup: after checking no edit is running,
   the operator deletes `network.toml.lock` by hand. TODO(decision): whether to
   add a cleanup command.
-- TODO(decision): `confirm` does not take the catalog lock. A concurrent confirm
-  can overwrite an add/remove ledger change. Decide whether to serialize its
-  catalog read, operator prompt and ledger write with the same lock. Manual
-  edits also do not participate in the advisory lock.
+- CLI `confirm` prompts before taking the catalog edit lock. After `yes`,
+  `store.Edit` holds the lock from re-reading the catalog and ledger through
+  the atomic ledger write. A held lock uses the same immediate
+  `network_configuration_conflict` refusal as add/remove. The catalog bytes
+  must still match the preview; any change (including comments, deletion or
+  invalid TOML) refuses with `network_configuration_conflict` and sanitized
+  detail `catalog changed during confirm; run confirm again`, without writing
+  the ledger. A fresh ledger read preserves other edits made during the prompt.
+  Prompting first avoids holding a lock while a human waits or abandons the
+  terminal, reducing the risk of a crash-stale lock; the trade-off is that an
+  edit or held lock can require another confirm after the operator answers.
+  Lock cleanup runs on success, refusal and write failure through `store.Edit`.
+  Manual edits do not participate in this advisory lock and must not race the
+  locked read/write interval.
 - CLI `add` refuses an existing name before touching its confirmation. It reads
   and validates the ledger, deletes any entry for the new name and writes that
   cleanup before writing the catalog, all under `store.Edit`. A ledger failure
@@ -188,7 +199,7 @@ errors.
 | `network_profile_unknown` | the selected name is not in the catalog (or the catalog is absent) | resolve, store.Remove, cli show/check/confirm | 1 |
 | `network_profile_denied` | the name is outside the allowed set; or known but not confirmed at its current digest (detail `unconfirmed`) | resolve | 1 |
 | `network_scope_unsupported` | `enforced` assurance requested (TODO(decision)); a running host bound differently with no per-session route; a resume whose binding differs otherwise than by drift | resolve, binding.CheckReattach, gateway | 1 |
-| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; `add` of an existing name; `remove` of the operator default (both TODO(decision)); a held catalog edit lock | resolve, store | 1 |
+| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; `add` of an existing name; `remove` of the operator default (both TODO(decision)); a held catalog edit lock; catalog changed during confirm | resolve, store, cli confirm | 1 |
 | `network_proxy_unreachable` | TCP dial failed or timed out; CONNECT answered non-2xx other than 407; TLS handshake failed; the facts are in the probe result | probe | 1 |
 | `network_proxy_auth_failed` | CONNECT answered 407 | probe | 1 |
 | `network_profile_drift` | resume of an existing run: same profile name, different digest | binding.CheckReattach | 1 |
@@ -223,7 +234,7 @@ document `curator-network-<verb>-v1` on success.
 | `add <name> --endpoint URL [--bypass h1,h2] [--probe-target h:p]` | no | catalog | inserts the required bypass hosts; refuses an existing name; prints the pending-confirmation notice |
 | `remove <name>` | no | catalog, ledger | narrowing, applies at once; drops the ledger entry |
 | `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | only with `--probe` | no | without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
-| `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes` |
+| `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes`; locks, revalidates the catalog and re-reads the ledger before writing |
 | `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (TCP always; CONNECT+TLS with `probe_target`) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
 
 `Deps` is the only boundary: production main wires `os.Environ()`, the standard

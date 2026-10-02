@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -426,7 +427,9 @@ func probeLine(r *probe.Result) string {
 }
 
 // confirm records the current digest of each pending profile after the
-// operator, at a terminal and outside any agent session, types `yes`.
+// operator, at a terminal and outside any agent session, types `yes`. The
+// prompt holds no lock; the catalog is revalidated and the ledger re-read
+// under store.Edit before recording exactly the digests shown.
 func (a *app) confirm(args []string) int {
 	fs := a.flagSet("confirm")
 	pos, code, ok := a.operands(fs, args, 0, -1)
@@ -440,7 +443,7 @@ func (a *app) confirm(args []string) int {
 	if err != nil {
 		return a.fail(err)
 	}
-	file, _, err := store.Read(paths)
+	file, shownCatalog, err := store.Read(paths)
 	if err != nil {
 		return a.fail(err)
 	}
@@ -508,12 +511,29 @@ func (a *app) confirm(args []string) int {
 		fmt.Fprintln(prompt)
 		return a.fail(refusal.New(refusal.CodeConfirmRefused, "operator", "not confirmed (the answer was not `yes`)"))
 	}
-	now := a.deps.Now().UTC()
-	for i := range todo {
-		todo[i].ConfirmedAt = now
-		ledger.Set(todo[i].Name, todo[i].Digest, now)
-	}
-	if err := confirm.Write(paths.Ledger, ledger); err != nil {
+	if err := store.Edit(paths, func(*store.Editor) error {
+		currentCatalog, err := os.ReadFile(paths.File)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return refusal.New(refusal.CodeFileUnreadable, netprofile.FileName, "cannot read")
+		}
+		// The preview was validated already. Compare its bytes directly so
+		// even deletion or a malformed manual edit gets the change conflict.
+		if !bytes.Equal(shownCatalog, currentCatalog) {
+			return refusal.New(refusal.CodeConfigurationConflict, netprofile.FileName, "catalog changed during confirm; run confirm again")
+		}
+		// Another editor may have updated the ledger during the prompt.
+		// Preserve its entries instead of writing the preview's stale copy.
+		ledger, err := confirm.Read(paths.Ledger)
+		if err != nil {
+			return err
+		}
+		now := a.deps.Now().UTC()
+		for i := range todo {
+			todo[i].ConfirmedAt = now
+			ledger.Set(todo[i].Name, todo[i].Digest, now)
+		}
+		return confirm.Write(paths.Ledger, ledger)
+	}); err != nil {
 		return a.fail(err)
 	}
 	if a.json {

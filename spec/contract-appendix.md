@@ -1099,7 +1099,7 @@ them and prints `curator-network: <code>: <detail>`.
 | `network_profile_unknown` | the selected profile is not in the catalog (or the catalog is absent) |
 | `network_profile_denied` | outside the allowed set, or known but not confirmed at its current digest |
 | `network_scope_unsupported` | `enforced` requested; a running host bound differently without a per-session route; a resume whose binding differs otherwise than by drift |
-| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; an edit that would conflict (existing name, operator default); a held catalog edit lock |
+| `network_configuration_conflict` | an engine host is not in `bypass_hosts`; an edit that would conflict (existing name, operator default); a held catalog edit lock; catalog changed during confirm |
 | `network_proxy_unreachable` | TCP failed or timed out, CONNECT non-2xx other than 407, or the TLS handshake failed |
 | `network_proxy_auth_failed` | CONNECT answered 407 |
 | `network_profile_drift` | resume of an existing run under the same profile name with a different digest |
@@ -1137,9 +1137,20 @@ and no stale entry, `remove` refuses without creating `.curator` or acquiring
 an edit lock. Removing a confirmed operator default refuses with
 `network_configuration_conflict`; catalog and ledger bytes stay unchanged.
 
-TODO(decision): `confirm` does not take the catalog lock; concurrent confirmation
-can overwrite an add/remove ledger change. Decide whether to serialize its
-catalog read, operator prompt and ledger write with that lock.
+CLI `confirm` prompts before taking the catalog edit lock (`network.toml.lock`,
+O_CREATE|O_EXCL), shared with add/remove through `store.Edit`. After `yes`, it
+holds that lock from re-reading the catalog and ledger through the atomic
+ledger write. Contention refuses immediately with the same held-lock
+`network_configuration_conflict` as add/remove. Any catalog byte change since
+the preview, including comments, deletion or invalid TOML, refuses with
+`network_configuration_conflict` and sanitized detail
+`catalog changed during confirm; run confirm again`; the ledger is untouched.
+The fresh ledger read preserves concurrent ledger edits made during the prompt.
+The lock is released on success, refusal and write failure. Prompting first
+avoids a human waiting or abandoning a terminal with a lock held, reducing the
+risk of a crash-stale lock; an intervening edit or held lock may require the
+operator to run confirm again after answering. Manual edits do not take this
+advisory lock and must not race the locked read/write interval.
 
 Unknown-key refusals report a count and, only for keys in one profile whose
 name passes the plain-subject rule, `[networks.<name>]`. Unknown key names
