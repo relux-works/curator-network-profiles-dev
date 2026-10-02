@@ -8,9 +8,9 @@ Several agents on one machine must reach the network through different applicati
 
 ## What we are building
 
-- A library `curator-network-profiles` (own public repository; consumed by task-board and the public `curator-run`): resolve → validate → probe → patch.
+- A library `curator-network-profiles` (own public repository; consumed by task-board and the public `curator-run`): resolve → validate → conditional probe → patch; direct and plans/dry runs skip all probes (tcp/connect/tls = `skipped`).
 - `--network <name>` on `curator run` and `task-board spawn` (`task-board claude|codex` are aliases of `curator run`); defaults from the operator layer (agent selection) and runtime bindings; the machine's network profiles in `~/.curator/network.toml`, managed with the Curator provider `curator-network` (`curator network list|show|add|remove|check [--probe]|confirm|exec`).
-- The patch is applied by the host that creates the process (`unset` then `set`), never through a shared environment; bindings are compared by digest; a resume under a changed profile is refused.
+- The patch is applied by the host that creates the process (`unset` then `set` for proxy profiles; direct is unset-only with no set), never through a shared environment; bindings are compared by digest; a resume under a changed profile is refused.
 
 ## Milestones
 

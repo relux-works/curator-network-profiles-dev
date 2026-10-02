@@ -1,6 +1,6 @@
 # curator-network-profiles
 
-Per-launch network profiles for coding agents. A network profile is a named, machine-local description of the application-level proxy through which a harness's supported network clients connect. The process owner that starts the harness resolves the profile, validates and probes it, and applies an environment patch immediately before spawn. Several agents on one machine can then use different egresses at the same time, without changing the orchestrator, sibling agents or the operating system. The first release is cooperative proxy routing of supported clients, not an enforced sandbox.
+Per-launch network profiles for coding agents. A network profile is a named, machine-local description of an application-level proxy or a cooperative direct route for a harness's supported network clients. The process owner resolves and validates the profile, probes only real proxy launches, and applies an environment patch immediately before spawn. Direct skips all probes and uses an unset-only patch with no set values; plans and dry runs also skip probes (`tcp`, `connect`, `tls` = `skipped`). Several agents on one machine can then use different egresses at the same time, without changing the orchestrator, sibling agents or the operating system. The first release is cooperative proxy routing of supported clients, not an enforced sandbox.
 
 **Status: slice A (track step N-A) is implemented on this branch: the library, the operator file `~/.curator/network.toml`, the provider `curator-network`, the contract appendix and the loopback demo. The design specification stays DRAFT; `spec/contract-appendix.md` is normative for contract version `relux-network-profiles-v1`.**
 
@@ -22,11 +22,30 @@ Per-launch network profiles for coding agents. A network profile is a named, mac
 
 ## How it fits
 
-- A Go library (`resolve → validate → probe → patch`) with no daemon; it creates no processes and imports none of its callers.
+- A Go library (`resolve → validate → conditional probe → patch`) with no daemon; it creates no processes and imports none of its callers.
 - Its callers are the process owners: `curator-run` for interactive launches, task-board for tracked children, tb-sessiond for board sessions. Each applies the patch on every process-creation path it owns.
 - The patch reaches argv and environment through the agents-management launch plane (`skill-agents-management`), the one place where launches are built (adopted Decision 0019).
 - Selected with `--network <name>`; defaults come from the operator layer of agent selection and from runtime bindings. The machine's network profiles live in `~/.curator/network.toml` and are managed with `curator network …`, the Curator provider `curator-network` (the command-line shape adopted on 2026-09-27).
 - Roadmap: milestone M7 in `wiki/roadmap/ecosystem-roadmap.md`.
+
+## Upgrading to v0.2.0
+
+The contract schema strings stay v1 (`relux-network-profiles-v1` and
+`relux-network-binding-record-v1`): these are additive vocabulary changes
+before 1.0, with the following compatibility requirements.
+
+- Upgrade **every catalog reader on the machine** (`curator-network`,
+  `curator-run`, task-board, tb-sessiond, …) to v0.2.0 **before adding a direct
+  profile**. A v0.1.0 reader rejects the **whole catalog** once any
+  `kind = "direct"` entry exists, even when the selection names a different
+  proxy profile. Remove all direct entries before downgrading.
+- `resolve.Request` gained `Inherited`, which breaks positional (unkeyed)
+  struct literals. Use keyed literals, for example
+  `resolve.Request{Explicit: "egress-a", Inherited: persistedParentRef}`.
+- Consumers with a closed origin set must admit `inherited` before exchanging
+  Records. The Record schema id remains `relux-network-binding-record-v1`.
+- `check --json` adds a `kind` field per profile. This is additive; strict
+  decoders must allow the field.
 
 ## Using the provider
 
@@ -34,7 +53,7 @@ Per-launch network profiles for coding agents. A network profile is a named, mac
 make build                                           # bin/curator-network
 bin/curator-network add egress-a --endpoint http://127.0.0.1:18081
 bin/curator-network confirm egress-a                 # from an operator terminal, never from an agent session
-bin/curator-network check egress-a --probe           # the only network call: TCP, then CONNECT and TLS to probe_target
+bin/curator-network check egress-a --probe           # proxy probe: TCP; CONNECT+TLS when probe_target is configured
 bin/curator-network exec egress-a -- codex           # resolve → validate → preflight → patch → exec; no fallback to direct
 bin/curator-network add direct --direct             # named profile; no endpoint, bypass or probe target
 bin/curator-network confirm direct                  # requires the same operator confirmation

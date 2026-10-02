@@ -13,7 +13,7 @@ Russian files under `spec/` cover the design and the track only).
 
 A Go module, `github.com/relux-works/curator-network-profiles`, with two halves:
 
-- `pkg/…`, the importable library: `resolve → validate → probe → bind → patch`.
+- `pkg/…`, the importable library: `resolve → validate → conditional probe → bind → patch`.
   It creates no processes, runs no daemon, never calls `os.Setenv`, never reads
   `os.Getenv`, and imports none of its callers.
 - `cmd/curator-network` + `internal/…`, the Curator provider behind
@@ -23,6 +23,25 @@ A Go module, `github.com/relux-works/curator-network-profiles`, with two halves:
   are the child's.
 
 Dependencies: the standard library and `github.com/pelletier/go-toml/v2`.
+
+## Upgrading to v0.2.0
+
+The contract schema strings stay v1 (`relux-network-profiles-v1` and
+`relux-network-binding-record-v1`): these are additive vocabulary changes
+before 1.0, with the following compatibility requirements.
+
+- Upgrade **every catalog reader on the machine** (`curator-network`,
+  `curator-run`, task-board, tb-sessiond, …) to v0.2.0 **before adding a direct
+  profile**. A v0.1.0 reader rejects the **whole catalog** once any
+  `kind = "direct"` entry exists, even when the selection names a different
+  proxy profile. Remove all direct entries before downgrading.
+- `resolve.Request` gained `Inherited`, which breaks positional (unkeyed)
+  struct literals. Use keyed literals, for example
+  `resolve.Request{Explicit: "egress-a", Inherited: persistedParentRef}`.
+- Consumers with a closed origin set must admit `inherited` before exchanging
+  Records. The Record schema id remains `relux-network-binding-record-v1`.
+- `check --json` adds a `kind` field per profile. This is additive; strict
+  decoders must allow the field.
 
 ## 2. Packages
 
@@ -60,25 +79,32 @@ test (two concurrent launches through two egresses, real binaries) is
    ▼
  resolve.Resolve(file, ledger, req)
    │  explicit → inherited → runtime-default → project-default → operator-default; else UNMANAGED (empty patch)
-   │  allowed set → exists → assurance → confirmed at digest → engine hosts covered
+   │  allowed set → exists → assurance → confirmed at digest → engine hosts covered (proxy only)
    ▼
- probe.Dialer.Probe(ctx, {endpoint, probe_target, timeout})      ← the only network call
-   │  tcp → CONNECT → TLS (verification on); refuse on the first failed step
+ preflight branch
+   ├─ kind == direct ──► no probe; ProbeRecord tcp/connect/tls = skipped
+   ├─ else plan/dry run ► no probe; ProbeRecord tcp/connect/tls = skipped
+   └─ otherwise ───────► probe.Dialer.Probe(ctx, {endpoint, probe_target, timeout})
+   │                    tcp → CONNECT → TLS (with target, verification on); refuse on failure
    ▼
  binding.Binding{profile_ref, profile_digest, adapter_identity, assurance, resolved_endpoint, env_patch}
    │  env_patch = envpatch.Generic{}.Patch(profile)
    ▼
- patch.Apply(inheritedEnv) → child env (unset the proxy family, then set the coherent six)
+ patch.Apply(inheritedEnv) → child env
+   │  direct: unset the proxy family; set nothing
+   │  proxy: unset the proxy family, then set the coherent six
    │
    ▼
- (caller) spawn / syscall.Exec            ──► no fallback to direct on any failure
+ (caller) spawn / syscall.Exec (real launch only) ──► no fallback to direct on any failure
    │
    ▼
  binding.Record{schema, profile_ref, profile_digest, adapter_identity, assurance, origin, probe}  → manifests, logs
 ```
 
-A plan or dry run skips the probe arrow entirely and records all probe steps
-as `skipped`. A managed Record always has schema
+Direct, a plan or a dry run never calls the prober and records all three
+`ProbeRecord` fields (`tcp`, `connect`, `tls`) as `skipped`. Direct still gets
+a managed binding, with an unset-only patch and an empty set. Unmanaged keeps
+an empty patch and no network Record. A managed Record always has schema
 `relux-network-binding-record-v1` and a non-null `probe` object. An absent
 `network` manifest key means unmanaged (appendix §3.4).
 
@@ -103,7 +129,7 @@ probe_target = "example-probe.invalid:443"    # optional, TODO(decision)
 
 - Names: `^[a-z0-9][a-z0-9._-]{0,62}$`. A name with a dot is written as a quoted
   key `[networks."vpn.eu"]` because TOML would otherwise nest tables.
-- Endpoint: `http://host:port` only, explicit port, no userinfo (the value is
+- Proxy endpoint: `http://host:port` only, explicit port, no userinfo (the value is
   never echoed), no path but `/`, no query or fragment; lowercased; IPv6 in
   brackets; IP literals are canonicalized with `netip`, and IPv4-mapped IPv6
   is unmapped to IPv4. `bypass_hosts` must contain `localhost`, `127.0.0.1`,
@@ -237,9 +263,9 @@ document `curator-network-<verb>-v1` on success.
 | `add <name> --endpoint URL [--bypass h1,h2] [--probe-target h:p]` | no | catalog | inserts the required bypass hosts; refuses an existing name; prints the pending-confirmation notice |
 | `add <name> --direct` | no | catalog | named direct, kind-only table, unset-only patch; conflicts with endpoint/bypass/probe-target; requires confirmation |
 | `remove <name>` | no | catalog, ledger | narrowing, applies at once; drops the ledger entry |
-| `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | only with `--probe` | no | without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
+| `check [<name>|--all] [--probe] [--target h:p] [--timeout 3s]` | proxy profiles with `--probe` only | no | direct skips tcp/connect/tls even with `--probe`; without `--probe` the prober is never called (a test injects a prober that fails the suite if called) |
 | `confirm [<name>…]` | no | ledger | guardrail: any of `CLAUDECODE, CLAUDE_CODE_SESSION_ID, CLAUDE_CODE_ENTRYPOINT, CODEX_THREAD_ID, CODEX_SESSION, CODEX_CI, TASK_BOARD_RUN_ID, A2A_AGENT` set, or stdin not a terminal, refuses; then lists pending digests and asks for `yes`; locks, revalidates the catalog and re-reads the ledger before writing |
-| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (proxy TCP; CONNECT+TLS with `probe_target`; direct skips all steps) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
+| `exec <name> [--preflight-timeout 3s] [--dry-run] -- <cmd> [args]` | real proxy launches only | no | validate the name and require explicit managed resolution; resolve → validate → command lookup → preflight (proxy TCP; CONNECT+TLS with `probe_target`; direct skips all steps) → bind → `Apply` → `syscall.Exec`; `--dry-run` skips lookup and preflight and prints the Record and patch with tcp/connect/tls skipped; lookup uses inherited `PATH`, skips empty elements and honors an explicit `.` |
 
 `Deps` is the only boundary: production main wires `os.Environ()`, the standard
 streams, the char-device test on stdin, `syscall.Exec`, `probe.Dialer` and
@@ -270,15 +296,32 @@ three probe facts are not lost (TODO(decision)).
 and before spawn: `cat, err := catalog.Load(env)`; refuse on error;
 `res, err := cat.Resolve(resolve.Request{Explicit: flag, Inherited: persistedParentRef, RuntimeDefault: …,
 ProjectDefault: …, Allowed: hostSet, EngineHosts: engines})`; on
-`res.Managed`, `probe.Dialer{}.Probe`, build the `binding.Binding` with the
-launcher's `AdapterIdentity{Adapter: envpatch.AdapterGeneric, Harness:
-"claude", Build: toolRelease, Entrypoint: …}`, `env = b.EnvPatch.Apply(env)`,
-spawn, and keep `b.Record(origin, probe)` beside `RuntimeProvenance`. The
-proxy variables travel as owned literals (`env_literals`): `b.EnvPatch.SetLiterals()`.
+error, refuse. If `!res.Managed`, keep the ambient environment and omit the
+network Record. For a managed result, prepare a `binding.ProbeRecord` named
+`pr` and branch before preflight:
+
+- `res.Profile.Kind == netprofile.KindDirect`: no probe; use
+  `binding.ProbeRecord{TCP: "skipped", Connect: "skipped", TLS: "skipped"}`
+  and an unset-only patch (empty set).
+- Otherwise, a dry run or plan: no probe; use the same skipped ProbeRecord.
+- Otherwise: call `probe.Dialer{}.Probe`; refuse on error and copy its facts
+  into the ProbeRecord.
+
+Build the `binding.Binding` with the launcher's verified
+`AdapterIdentity{Adapter: envpatch.AdapterGeneric, Harness: "claude",
+Build: toolRelease, Entrypoint: …}` and `envpatch.Generic{}.Patch(res.Profile)`.
+Apply `env = b.EnvPatch.Apply(env)` after the final overlay, spawn only for a
+real launch, and keep `b.Record(string(res.Selection.Origin), &pr)` beside
+`RuntimeProvenance`. The set values travel as owned literals (`env_literals`):
+`b.EnvPatch.SetLiterals()`, empty for direct. Apply unsets on the destination
+host to both the final environment and owned literals.
 
 **N-C1 / N-C2, task-board `internal/spawn` and tb-sessiond.** Same call on
-every process-creation path (spawn, retry, resume, recursive children). At
-resume or reattach: `binding.CheckReattach(recorded, fresh, binding.EventReattach,
+every process-creation path (spawn, retry, resume, recursive children). Use
+the same preflight branch: direct gets no probe and an unset-only patch with
+no set; plans/dry runs get no probe; both record tcp/connect/tls as `skipped`.
+Only real proxy launches call the prober. Apply the patch after the final
+overlay on the child's host. At resume or reattach: `binding.CheckReattach(recorded, fresh, binding.EventReattach,
 perSessionRoute)` refuses drift and scope changes per N7; on a running host,
 `binding.EventNewAssignment`. Run manifests keep `binding.Record`.
 `resolve.OriginInherited` is the parent reference persisted by the process owner
@@ -301,8 +344,9 @@ returns the lease endpoint from `Endpoint`; `Binding` grows `lease_id` and
 
 **Harness adapters beyond generic.** Implement `envpatch.Adapter`: `Identity()`
 returns the adapter id recorded in `AdapterIdentity.Adapter`, and `Patch`
-returns the generic set plus the verified additions for that harness
-(`ALL_PROXY`, websocket variables, a per-launch runtime override). Additions
+returns the generic proxy set plus the verified additions for that harness
+(`ALL_PROXY`, websocket variables, a per-launch runtime override); for direct,
+keep the patch unset-only with no set values. Additions
 enter only after the entrypoint is verified on a pinned release (spec N5, N7);
 muse's closed allowlist is such an adapter, not a change to the generic one.
 

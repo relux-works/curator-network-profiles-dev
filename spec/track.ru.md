@@ -10,9 +10,9 @@
 
 ## Что строим
 
-- Библиотеку `curator-network-profiles` (собственный публичный репозиторий; ей пользуются task-board и публичный `curator-run`): `resolve → validate → probe → patch`.
+- Библиотеку `curator-network-profiles` (собственный публичный репозиторий; ей пользуются task-board и публичный `curator-run`): `resolve → validate → conditional probe → patch`; direct и планы/сухие запуски пропускают все пробы (tcp/connect/tls = `skipped`).
 - `--network <name>` у `curator run` и `task-board spawn` (`task-board claude|codex` — псевдонимы `curator run`); значения по умолчанию из слоя оператора (выбор агентов) и привязок сред выполнения; сетевые профили машины в `~/.curator/network.toml`, которыми управляет провайдер Curator `curator-network` (`curator network list|show|add|remove|check [--probe]|confirm|exec`).
-- Патч применяет хост, который создаёт процесс (`unset`, затем `set`), и никогда через общее окружение; привязки сравниваются по дайджесту; возобновление при изменившемся профиле отклоняется.
+- Патч применяет хост, который создаёт процесс (`unset`, затем `set` для профилей прокси; direct содержит только unset, без set), и никогда через общее окружение; привязки сравниваются по дайджесту; возобновление при изменившемся профиле отклоняется.
 
 ## Вехи
 

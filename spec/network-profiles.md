@@ -63,7 +63,7 @@ The network module never copies logins, changes provider homes, chooses an accou
 
 ### N2 One library, three process owners
 
-A Go module named **`curator-network-profiles`** (name decided on 2026-09-24): `resolve → validate → probe → patch`. It imports neither task-board, nor `curator-model-router`, nor ax storage; those are its callers. It creates no processes and owns no daemon.
+A Go module named **`curator-network-profiles`** (name decided on 2026-09-24): `resolve → validate → conditional probe → patch` (direct and plans/dry runs skip all probes). It imports neither task-board, nor `curator-model-router`, nor ax storage; those are its callers. It creates no processes and owns no daemon.
 
 Every process owner applies the binding immediately before spawn on every process-creation path it owns: `curator-run` (interactive), task-board `internal/spawn` (children, retries, recursive worker launches, resume), tb-sessiond (primary sessions, including the codex app-server host and claude PTY host, at launch and at resume). `curator-inference-manager` is a fourth process owner whose processes are engines, not harnesses: engine networking is out of this epic (N12).
 
@@ -100,7 +100,7 @@ The file is edited through `curator network add|remove` or by hand. Adding or ch
 
 `NetworkBinding` (what is applied): `profile_ref`, `profile_digest`, `adapter_identity` (harness build + entrypoint + plugin), `resolved_endpoint`, `assurance`, `env_patch`; later `lease_id`, `generation` for a managed gateway. Run manifests keep `profile_ref`, `profile_digest`, `adapter_identity`, `assurance` and the probe result; never the full environment or an endpoint carrying credentials. A digest binds the configuration, not the external proxy's actual egress.
 
-`env_patch` is two ordered operations, `unset` then `set`: `unset` removes every proxy-family variable the adapter knows, in both spellings, from the environment of the host that creates the process, and `set` writes the coherent set of N5; a patch is never only additions. `profile_digest` is computed over the normalized effective profile (schema version, kind, endpoint, sorted `bypass_hosts`, credential *mode* without any secret; direct includes only schema, kind and credential mode), never over probe results, lease ids or timestamps. Two bindings are **equal** when `profile_digest`, `adapter_identity` and `assurance` are equal; an equal profile name proves nothing.
+`env_patch` is two ordered operations, `unset` then `set`: `unset` removes every proxy-family variable the adapter knows, in both spellings, from the environment of the host that creates the process, and `set` writes the coherent proxy set of N5 (empty for direct); a patch is never only additions. `profile_digest` is computed over the normalized effective profile (schema version, kind, endpoint, sorted `bypass_hosts`, credential *mode* without any secret; direct includes only schema, kind and credential mode), never over probe results, lease ids or timestamps. Two bindings are **equal** when `profile_digest`, `adapter_identity` and `assurance` are equal; an equal profile name proves nothing.
 
 A `runtimes.toml` entry (LP-D2) MAY carry `network = "<name>"` as the default for that binding, and project configuration MAY carry `spawn.network.default = "<name>"` (decided 2026-09-22 after review): both are stable profile ids resolved on each machine and refused as `network_profile_unknown` where the machine has no such profile. An explicit `--network` overrides both.
 
@@ -124,7 +124,7 @@ For `direct`, the patch is **unset-only**: remove the same proxy family case-ins
 
 ### N6 Gateway shape
 
-Common surface: **HTTP proxy with CONNECT**, because Claude Code supports HTTP/HTTPS proxy env and not SOCKS. Behind it: an upstream HTTP proxy, a SOCKS upstream, or a WireGuard endpoint. First managed backend candidate: sing-box with a `mixed` loopback listener, `set_system_proxy: false`, no TUN, WireGuard without a system interface, pinned to a supported version. In slice A the gateway is operator-configured; the library only reads the profile and probes the endpoint, and the process owner or `curator network exec` launches. This is a network tunnel, not an LLM gateway: model API, prompts, model ids and credentials are untouched; TLS verification stays on; corporate TLS inspection is a separate explicit mode.
+Common surface: **HTTP proxy with CONNECT**, because Claude Code supports HTTP/HTTPS proxy env and not SOCKS. Behind it: an upstream HTTP proxy, a SOCKS upstream, or a WireGuard endpoint. First managed backend candidate: sing-box with a `mixed` loopback listener, `set_system_proxy: false`, no TUN, WireGuard without a system interface, pinned to a supported version. In slice A the gateway is operator-configured; the library only reads the profile and probes proxy endpoints (direct skips probing), and the process owner or `curator network exec` launches. This is a network tunnel, not an LLM gateway: model API, prompts, model ids and credentials are untouched; TLS verification stays on; corporate TLS inspection is a separate explicit mode.
 
 ### N7 Harness support is per launch shape
 
@@ -144,7 +144,7 @@ A session-level "change network profile" operation is not in the MVP; it arrives
 
 ### N8 Integration surfaces
 
-- `curator run <runtime> --profile <p> --network egress-a -- <args>`: resolve, validate compatibility, bounded preflight, patch after the ordinary environment composition; admission and late checks unchanged.
+- `curator run <runtime> --profile <p> --network egress-a -- <args>`: resolve, validate compatibility, bounded preflight for proxy profiles only, patch after the ordinary environment composition; admission and late checks unchanged.
 - `task-board spawn … --network egress-a` and `spawn.network.default` / per-binding `network`: the orchestrator selects a profile id from the allowed set, never a raw proxy URL. Inheritance by a child is **by reference plus re-resolution**, with `origin = inherited`, never by copying the orchestrator's environment; a parent on A may spawn a child on B.
 - Manifests: beside `RuntimeProvenance` and the Curator `profile.name`/`lock_sha256` (LP-D11), `network.profile_ref`, `profile_digest`, `adapter_identity`, `assurance`.
 
@@ -154,7 +154,7 @@ The tracked transport serializes owned literals only, so a proxy set on the oute
 
 ### N10 Lifecycle, checks, errors
 
-`resolve → validate profile + adapter → bounded proxy preflight → prepare binding → spawn → record outcome`. No scheduler, no daemon registration, no lease model in slice A. `curator network show` and a plan are read-only; `curator network check` validates without a network call, and `check --probe` is the explicit network call (the proposed `netrun doctor`); the launch preflight is deadline-bounded and uses no model credentials. Three distinct facts: an open TCP port; a successful CONNECT and TLS to the agreed target; an observed external IP for that test only. Failure codes: `network_profile_unknown`, `network_profile_denied`, `network_scope_unsupported`, `network_configuration_conflict`, `network_proxy_unreachable`, `network_proxy_auth_failed`, `network_profile_drift`. A missing, denied, unsupported or unreachable profile means the agent does not start; there is no hidden direct fallback and no automatic VPN or account switch; refusing to start is not an OS kill switch. A mid-run drop is reported to the run owner, who decides; nothing restarts the task unconditionally.
+`resolve → validate profile + adapter → conditional bounded proxy preflight → prepare binding → spawn → record outcome`. Direct and plans/dry runs skip preflight; their `ProbeRecord` tcp/connect/tls fields are `skipped`. No scheduler, no daemon registration, no lease model in slice A. `curator network show` and a plan are read-only; `curator network check` validates without a network call, and `check --probe` for proxy profiles is the explicit network call (the proposed `netrun doctor`); the launch preflight is deadline-bounded and uses no model credentials. Three distinct facts: an open TCP port; a successful CONNECT and TLS to the agreed target; an observed external IP for that test only. Failure codes: `network_profile_unknown`, `network_profile_denied`, `network_scope_unsupported`, `network_configuration_conflict`, `network_proxy_unreachable`, `network_proxy_auth_failed`, `network_profile_drift`. A missing, denied, unsupported or unreachable profile means the agent does not start; there is no hidden direct fallback and no automatic VPN or account switch; refusing to start is not an OS kill switch. A mid-run drop is reported to the run owner, who decides; nothing restarts the task unconditionally.
 
 For direct, preflight and `check --probe` skip all three steps (`tcp`, `connect`, `tls` = `skipped`); no endpoint is dialed.
 

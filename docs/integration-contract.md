@@ -25,24 +25,24 @@ Advice item numbers below retain `critical-fixes`' numbering within §2.2 and §
 The Go module `github.com/relux-works/curator-network-profiles` exposes `pkg/`, creates no processes, runs no daemon and imports no callers (N2). The process owner prepares a binding **on the destination host immediately before spawn or resume**:
 
 ```text
-Selection → resolve/validate → bounded preflight → bind → patch.Apply(final childEnv) → spawn → record
-ref+origin      N4/N3/N12           N10            N3             N5                         N8
+Selection → resolve/validate → conditional preflight → bind → patch.Apply(final childEnv) → spawn → record
+ref+origin      N4/N3/N12              N10              N3             N5                         N8
 ```
 
 | Operation | Input / result | Refusals |
 | --- | --- | --- |
 | resolve/validate | caller's explicit/inherited/runtime/project refs; host catalog, confirmations, allowed set, assurance and engine hosts → normalized profile and origin, or unmanaged | `network_profile_unknown`, `network_profile_denied`, `network_file_unreadable`, `network_profile_invalid`, `network_configuration_conflict`, `network_scope_unsupported` |
-| preflight | endpoint, optional target, deadline → TCP/CONNECT/TLS facts | `network_proxy_unreachable`, `network_proxy_auth_failed` |
-| bind / patch / record | verified adapter tuple → Binding; unset then set final env; sanitized Record | no new refusal codes |
+| preflight | direct or plan/dry run → no probe, `ProbeRecord` tcp/connect/tls = `skipped`; otherwise endpoint, optional target, deadline → TCP/CONNECT/TLS facts | `network_proxy_unreachable`, `network_proxy_auth_failed` |
+| bind / patch / record | verified adapter tuple → Binding; direct unsets only (empty set), proxy unsets then sets final env; sanitized managed Record | no new refusal codes |
 | reattach / resume | recorded Record, freshly resolved binding, event → full equality check | `network_profile_drift`, `network_scope_unsupported`; resolve's unknown/denied comes first |
 
 These are conceptual stages, not separate public methods: `catalog.Load` and `Catalog.Resolve` perform catalog/ledger loading and validation (N/pkg/catalog/catalog.go:28–70; pkg/resolve/resolve.go:116–157). The appendix already implements the added file/profile codes, retaining their TODO(decision) labels. **Unmanaged means no selection, an empty patch and unchanged ambient routing; it does not mean direct.**
 
-Apply the patch **after filtering and every overlay**, updating full Env and owned literals. Its `set` half travels as `env_literals`, never `env_names` (N5; S/decisions/0013-execution-ownership-and-launch-plans.md:193–206). Later overlays must refuse proxy-family names case-insensitively (`network_configuration_conflict`) when managed. Reapply the same patch after the final overlay if cleanliness cannot be proved; idempotence does not protect against later writes or different bindings. Relevant late overlays are B/internal/spawn/launch_plan.go:479 and L/internal/composition/composition.go:91–110. A/pkg/vendorplugin/vendors/local-models/spawn.go:54 merges **before** BuildPlan (A/pkg/vendorplugin/spawn.go:249–315).
+Apply the patch **after filtering and every overlay**, updating full Env and owned literals. For direct, unset the proxy family from both Env and owned literals and set nothing. A proxy patch's `set` half travels as `env_literals`, never `env_names` (N5; S/decisions/0013-execution-ownership-and-launch-plans.md:193–206). Later overlays must refuse proxy-family names case-insensitively (`network_configuration_conflict`) when managed. Reapply the same patch after the final overlay if cleanliness cannot be proved; idempotence does not protect against later writes or different bindings. Relevant late overlays are B/internal/spawn/launch_plan.go:479 and L/internal/composition/composition.go:91–110. A/pkg/vendorplugin/vendors/local-models/spawn.go:54 merges **before** BuildPlan (A/pkg/vendorplugin/spawn.go:249–315).
 
 Advice §2.2(5): “The `set` half can carry proxy userinfo.” Raw structs can, but normalized profiles refuse it (N/pkg/netprofile/profile.go:202–203). Only normalized, confirmed resolution may produce a patch; serialize **Record only**, never Binding/Patch, endpoint or env. Owned literals are recorded/replayed and must be non-secret (0013:232–235,304–313). V1 permits credential mode `none`; future secrets stay in a gateway, behind a loopback endpoint (N6/N11).
 
-Plans/dry runs resolve, validate, bind and patch, skip network preflight, and record `skipped` (N10). Real proxy launches probe the destination; direct skips all probes; a targetless probe proves TCP only.
+Plans/dry runs resolve, validate, bind and patch, skip network preflight, and record tcp/connect/tls as `skipped` (N10). Direct also skips all three probes, including `check --probe`, and uses an unset-only patch with no set values. Only real proxy launches probe the destination; a targetless probe proves TCP only.
 
 ### Record and equality (N3, N7, N8)
 
@@ -114,7 +114,7 @@ A direct profile forbids endpoint, bypass hosts and probe target, needs confirma
 
 **Lands in:** N-C1b (N-C1: TASK-261002-re5ew4), after M3 / LP Phase 0 (tb-R151). Hosts build from daemon `os.Environ()` (H/codex_host.go:161–187,261–268; claude_host.go:700–727,2427–2450). Apply one shared helper **last** to `command.Env`, after TMPDIR at codex :178–179 and claude :710–711.
 
-- **Carrier — advice §2.3(2):** “Send the ref, the origin and the expected digest”. Use that credential-free selector envelope in `OwnerRunContext` (H/launch_plan.go:123–136) and `PrimarySessionLaunchPlan` / `CodexSessionLaunch` (:74–86,138). The daemon re-resolves against its own catalog, confirmations, allowed set and verified tuple, checks the expected digest and probes locally. Strict decoders (:172,189,441; claude_host.go:426) fail closed. Bump `controlProtocolVersion` from 8 (H/types.go:31) and use client.go:71–100 restart diagnostics.
+- **Carrier — advice §2.3(2):** “Send the ref, the origin and the expected digest”. Use that credential-free selector envelope in `OwnerRunContext` (H/launch_plan.go:123–136) and `PrimarySessionLaunchPlan` / `CodexSessionLaunch` (:74–86,138). The daemon re-resolves against its own catalog, confirmations, allowed set and verified tuple, checks the expected digest and uses §1's preflight branch locally: no probe for direct or plans/dry runs (all three steps `skipped`); otherwise probe. Strict decoders (:172,189,441; claude_host.go:426) fail closed. Bump `controlProtocolVersion` from 8 (H/types.go:31) and use client.go:71–100 restart diagnostics.
 - **Record/reuse — advice §2.3(1):** the live-host check was already proposed; add startup reconciliation too. Store Record in `ProviderHostRecord.Opaque` snapshots (H/claude_host.go:840; codex_host.go:336). Check before all `ensureHostLocked` paths (H/manager.go:1584): live fast path :1589–1604, Restore :1625, Launch :1678–1690; also before `restoreAndReconcileLocked` calls Restore at :1981 (:1964–1981). Existing unmanaged hosts refuse profiled assignments. Stop-only Restore paths (:918,2035) remain usable.
 - **Q4 — decided (tb-R148 D1):** advice Q4, “tb-sessiond starts one app-server per session”. Fresh sessions get independent bindings (H/manager.go:1589,1751; codex_host.go:341); the legacy B/cmd/codex.go:189–252 shares an app-server. First-release live-host attach/restore requires equal binding or refusal; existing-run Restore is `EventReattach`, not automatically `EventNewAssignment`, so drift and full equality apply.
 - **Daemon startup — advice §2.3(3):** refuse startup from an identified profiled run **before stripping its identity**. B/cmd/session.go:591–592,653–673 strips run ids, not proxies; H/detached_launch.go:72–76 retains the starter env. Blanket stripping ordinary operator proxies would break unmanaged compatibility. Each managed session still patches last.
@@ -135,7 +135,7 @@ Also audit launcher release probes (L/cmd/curator-run/main.go:334,353 → A/inte
 
 **Q5 — D6 DEFERRED, Ivan, 2026-10-02 05:36Z:** deferred until ax implements session launch. [agent-session-manager#68](https://github.com/relux-works/agent-session-manager/issues/68) tracks carrier options, destination duties and refusal until then. Tracked `--network` keeps refusing (N9). Keep the Record extension (S/decisions/0013-execution-ownership-and-launch-plans.md:208–213), but require a negotiated, versioned network capability at the destination. Ax implementation owners enforce it; session-host owners own any bridge. X/README.md:5–7 is specification-only; ax proper (§5.1/§14.1) is absent from the supplied clones. Extension preservation alone proves no enforcement.
 
-The destination resolves/authorizes locally, compares expected digest, verifies its adapter tuple, preflights, applies unset then fresh set to its final env, and persists Record. Audit start/resume/fork/re-adoption; reject unsupported schemas or unaware hosts. Suppress conflicting old proxy literals before fresh application: 0013:304–313 otherwise replays them verbatim. Resume drift refuses `network_profile_drift` (environment-drift precedent :635–645); attach/resume uses full equality.
+The destination resolves/authorizes locally, compares expected digest and verifies its adapter tuple. It uses §1's preflight branch: direct or plans/dry runs skip all three steps; only real proxy launches probe. It applies the patch to its final env (direct unsets only, with no set; proxy unsets then applies fresh set) and persists Record. Audit start/resume/fork/re-adoption; reject unsupported schemas or unaware hosts. Suppress conflicting old proxy literals before fresh application: 0013:304–313 otherwise replays them verbatim. Resume drift refuses `network_profile_drift` (environment-drift precedent :635–645); attach/resume uses full equality.
 
 Set literals are non-secret and disjoint from `env_names` (0013:193–206). Canonical proxy spellings are reserved (C/internal/contextpkg/contextpkg.go:427; S/schemas/v1/agent-mcp-v1.schema.json:59); consumers must reject **mixed-case** proxy names too. N9 stays closed until destination conformance proves these rules.
 
@@ -160,7 +160,7 @@ Presence-key signing for `confirm` (curator-trust §10) is not available. N-A al
 | trust-store confirm | trust owner / curator-trust | after N-A | curator-trust §10 |
 | managed gateway | library/gateway owner / this repo | N-D | N-A; no N-B/C dependency |
 
-Consume the library **by tag**, never `replace` or `go.work`; `v0.1.0` is tagged (decided tb-R148 D10). **Q6 — decided (tb-R148 D7):** role-based ownership stays unchanged; the Curator and launcher owners coordinate N-B; the launcher owner leads its implementation; consumer representatives advise (W/decisions.md:458–460).
+Consume the library **by tag**, never `replace` or `go.work`; `v0.1.0` is tagged (decided tb-R148 D10). Before adopting v0.2.0, follow [the migration requirements](../README.md#upgrading-to-v020): upgrade every catalog reader before adding direct, remove direct entries before downgrading, use keyed `resolve.Request` literals, admit `inherited` origins and allow the additive `check --json` `kind` field. The contract schema strings remain v1 for these pre-1.0 additive vocabulary changes. **Q6 — decided (tb-R148 D7):** role-based ownership stays unchanged; the Curator and launcher owners coordinate N-B; the launcher owner leads its implementation; consumer representatives advise (W/decisions.md:458–460).
 
 ## 4. Invariants every consumer keeps
 
