@@ -239,29 +239,66 @@ unverified.
 Credit: **tb-muse (ivan-tb-muse)**. Ivan's final decision is **D8 = (A): supported
 with `muse-env-v1`**. No Muse process was rerun here.
 
-Source reconciliation: the supplied `D8-muse-results.md`, reread after these
-runs, still has the earlier R6-pending text. The explicit final-results correction
-in `BRIEF-hv-r2.md` supersedes it. Earlier raw results describe
-**1.4.1-R4503.1 / launcher + Echo `muse exec`** and
-**1.4.2-R4684.1 / launcher + Echo `muse exec`**. The final model/hook summary
-has no per-build split; it must not be represented as a separate rerun of each
-build. Preserve that attribution limit when registering adapter evidence.
+Source reconciliation (review round 3): the authoritative tb-muse results are
+`D8-muse-results-R7.md`, a2a event
+`$-zgTvjzoB8PCxk4iIw9EMpkd9i1LoolDcm4Bxg9FmmE`, and the later R6 SIGKILL
+closure in `D8-muse-R6-sigkill-msg.txt`, a2a event
+`$hg9qka6eh195DUaUnm6jiow38K7vnYPaYxzWumhqOMI` (2026-10-02T05:33:20Z).
+The supplied `D8-muse-results.md` and `D8-muse-results-R6.md` are superseded
+where they conflict. The round-2 import used stale evidence; its statements
+that R6 lacked a per-build split, model target, or numeric exit are superseded.
+All results below are imported observations, with no new harness run.
 
-| Row | Final result | Evidence / mitigation |
+R0, R1, R2 and R4 are reported per build for **1.4.1-R4503.1** and
+**1.4.2-R4684.1**; the latter's R0/R1/R2 row is explicitly identical to 1.4.1.
+R6 has its own per-build table below. R3's detailed variants and R4b's explicit
+MCP env demonstration are on **1.4.1-R4503.1** only. R5 is aggregate across
+both builds' R0–R4 observations. R7a's detailed hook setup is **1.4.1** only;
+there is no separate 1.4.2 hook run in the file. The SIGKILL message summarizes
+R3 as passing on both, but supplies no separate 1.4.2 variant rows; its aggregate
+hook failure summary does not extend the detailed hook coverage to 1.4.2.
+
+| Row | Coverage / result | Evidence / mitigation |
 |---|---|---|
-| R0 | PASS | Echo control completed offline. |
-| R1 | PASS | Launcher CONNECTs reached `api.meta.ai:443`; early per-build rows report two requests and exit 1 on 502. |
-| R2 | PASS | Closed loopback proxy produced connection refusal; early per-build rows report exit 1 and zero sink requests. |
-| R3 | PASS | Lowercase-only, uppercase-only, and ALL_PROXY-only reach the sink; early detailed coverage is for 1.4.1. |
-| R4 | FAIL as written | MCP child uses an allowlist; six values do not inherit. Both early builds report this. |
-| R4b | Mitigation works | MCP server `env` block is honored. Earlier raw file demonstrates HTTPS_PROXY and NO_PROXY; final correction confirms mitigation, without a six-value/per-build dump. |
-| R5 | PASS | No non-loopback sockets reported in tested scopes. |
-| R6 | PASS | Binary model client made **one CONNECT with no retry**. With proxy unreachable, SIGKILL controls exited **137**; Muse returned a plain transport error with **no SIGKILL**. Final summary omits model target and numeric Muse exit. |
-| R7a | FAIL as written | Hooks have an env allowlist and no env field; mitigation is wrapping the hook command with the patch. |
-| R7b | Open | Shell-tool coverage remains **#18 / TASK-261002-lfm3e9**. |
+| R0 | Both builds, PASS | Echo control: exit 0, zero sink requests and non-loopback sockets. |
+| R1 | Both builds, PASS | Launcher update: exit 1, two `CONNECT api.meta.ai:443`, zero non-loopback sockets. Curl uses the sink for launcher self-update and the channel manifest; synchronous mode exits on 502. |
+| R2 | Both builds, PASS | Launcher update with proxy at `127.0.0.1:9`: exit 1, zero sink requests and non-loopback sockets; curl connection refusal, no direct fallback. |
+| R3 | Detailed 1.4.1 variants, PASS; later summary says both PASS | Lowercase-only, uppercase-only and ALL_PROXY-only each reach the sink: exit 1, two requests, zero non-loopback sockets. This tests the launcher's curl, not the binary model client. |
+| R4 | Both builds, FAIL as written | MCP child uses `HOME LANG LOGNAME MUSE_SESSION_ID PATH PWD SHELL SHLVL TERM TMPDIR USER`; none of the six set proxy values or hostile ambient values inherit. Exit 0, zero sink requests and non-loopback sockets. |
+| R4b | 1.4.1, mitigation demonstrated | Explicit MCP server `env` delivers `HTTPS_PROXY` and `NO_PROXY`. Exit 0, zero sink requests and non-loopback sockets. This is not a six-value dump or a separate 1.4.2 mitigation run. |
+| R5 | Aggregate, both builds' R0–R4 | Zero non-loopback sockets sampled; Echo rows have no connection from the Muse binary itself. Sampling and invisible denial logs alone do not prove absence of an attempted direct dial. |
+| R7a | Detailed 1.4.1 SessionStart hook, FAIL as written | Offline Echo hook ran with `HOME LANG LOGNAME PATH PWD SHELL SHLVL SSH_AUTH_SOCK TERM TMPDIR USER`; no proxy or hostile values. Claude-compatible object schema has no per-hook `env`; flat `hooks: [...]` is rejected. Hook-command wrapping is required by the adapter, with no verified wrapping run in these sources. |
+| R7b | Open, unverified | Echo calls no tools; meta requires a real round trip blocked by the sink. No scripted/replay provider in 1.4.1 or 1.4.2. The TUI `!` escape is a proposed PTY verification path, pending **#18 / TASK-261002-lfm3e9**; an inferred shell allowlist is not evidence. |
 
-Proposal: **needs adapter `muse-env-v1`**, as accepted by Ivan: inject MCP env and
-wrap hook commands. Shell-tool scope remains open; the imported final aggregate
-must be resolved to exact builds before claiming build-specific model/hook
-assurance. The earlier source's lack of SIGKILL measurement must not erase the
-final R6 control result, or be silently extended to other rows.
+R6 exercises the **binary's own HTTPS client**, with auto-update disabled,
+`exec --provider meta --reasoning-effort low`, the same patch and sandbox, and
+an isolated XDG tree. The imported run used a temporary auth symlink (removed
+after each run); no credential-mutating command was used. The reachable request
+is a **model catalog fetch**, `https://api.meta.ai/muse-code/models`; it does not
+establish completion of a model turn.
+
+| Build | R6 proxy variant | Exit | Sink | Non-loopback sockets | Result |
+|---|---|---|---|---|---|
+| 1.4.1-R4503.1 | Reachable sink | 1 | 1 × `CONNECT api.meta.ai:443` | 0 | Model catalog uses the proxy; 502 yields `failed to fetch model catalog: transport error`, no retry or second attempt. |
+| 1.4.1-R4503.1 | Unreachable, `127.0.0.1:9` | 1 | 0 | 0 | Plain transport error; later calibrated closure reports no SIGKILL. |
+| 1.4.2-R4684.1 | Reachable sink | 1 | 1 × `CONNECT api.meta.ai:443` | 0 | Results file says identical to 1.4.1: model catalog, transport error, no retry. |
+| 1.4.2-R4684.1 | Unreachable, `127.0.0.1:9` | 1 | 0 | 0 | Results file says identical to 1.4.1; later calibrated closure reports no SIGKILL. |
+
+**R6 unreachable closure per build:** the results file initially limited this
+variant because generic transport errors and invisible denial logs could not
+rule out a blocked direct attempt. The later message calibrates the SIGKILL
+detector: `nc` to `1.1.1.1:443` exited **137**, direct `curl` to `api.meta.ai`
+exited **137**, and `curl` through the dead proxy exited **7**; loopback was
+unaffected. With the proxy at `127.0.0.1:9`, **1.4.1-R4503.1 exited 1 with no
+SIGKILL**, and **1.4.2-R4684.1 exited 1 with no SIGKILL**, both with the plain
+transport error. tb-muse closes R6 as no direct fallback attempt on this path.
+These are historical imported controls, not instructions to repeat external
+probes. This calibrated closure applies to R6; it does not add SIGKILL
+measurements to the other rows.
+
+Proposal: **needs adapter `muse-env-v1`**, as accepted by Ivan: inject the generic
+patch's set half into each MCP server's launch-private env and wrap each hook
+command with that patch. R4b demonstrates two injected values on 1.4.1, and hook
+wrapping remains a required mitigation rather than an observed pass. D8 = (A)
+retains these coverage limits and the open shell/tool scope; unverified child
+scopes remain `network_scope_unsupported`.
