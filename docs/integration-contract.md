@@ -68,22 +68,25 @@ A changed profile requires restoration or a genuinely new launch, never silent r
 
 ### 2.1 Launch plane: `skill-agents-management`
 
-**Lands in:** optional N-B hook migration / N-C1. **Q1 — decided (tb-R148 D4):** typed `Network{Patch,Record}` request data on `agentic.LaunchRequest` and `vendorplugin.SpawnRequest`, rather than arbitrary callbacks. Apply purely after `ChildEnv` (A/pkg/agentic/plan.go:459–463), including the separately filtered owned snapshot (:482–489; type :267–273). `LaunchRequest.Env` is the parent env (A/pkg/agentic/system.go:560); preserve existing engine provenance when adding network provenance. The module still owns no exec.
+**Lands in:** optional N-B hook migration / N-C1a. **Q1 — decided (tb-R148 D4, TASK-261002-143e84):** typed `Network{Patch,Record}` request data on `agentic.LaunchRequest` and `vendorplugin.SpawnRequest`, rather than arbitrary callbacks. Apply purely after `ChildEnv` (A/pkg/agentic/plan.go:459–463), including the separately filtered owned snapshot (:482–489; type :267–273). `LaunchRequest.Env` is the parent env (A/pkg/agentic/system.go:560); preserve existing engine provenance when adding network provenance. The module still owns no exec.
 
 Decision 0019 is **adopted** (S/decisions/0019-fragment-consumers-and-one-construction-site.md:5), but :117–120,172–175 leave environment composition with consumers pending a separate decision. Compose-first N-B remains viable. Keep owner-side final application until every later overlay rejects proxy names and final Env/OwnedEnv parity is proved.
 
 **Q7 — decided (tb-R148 D8):** support only verified exact harness/build/entrypoint/adapter tuples. Generic env support does not certify every claude/codex/qwen/pi/pinative/gemini/agy release. Verified harness-specific websocket/native overrides belong to that adapter, not the generic one (N5).
 
-- **Status:** Muse stays `network_scope_unsupported` until D8 completes; R6 (the model client) and R7 (tool children) are pending.
-- **Requirement:** when supported, the Muse adapter is `muse-env-v1`: the generic patch plus injection of the set half into **each** MCP server entry's `env` block. Muse filters MCP stdio children to the fixed allowlist `HOME LANG LOGNAME MUSE_SESSION_ID PATH PWD SHELL SHLVL TERM TMPDIR USER`, so proxy variables do not reach them through ambient inheritance (D8 R4, R4b, 2026-10-02). An explicit per-server `env` block delivers them.
-- **Exclusion:** control-plane bridges that must reach their own route are excluded and configure their transport explicitly (N11).
-- **Placement:** injection happens in the launch plane's Muse plugin (D4 carrier, TASK-261002-143e84), never by rewriting shared MCP config.
+- **Status — D8 = (A), Ivan, 2026-10-02 05:44Z:** Muse **1.4.1-R4503.1** and **1.4.2-R4684.1** are **SUPPORTED with `muse-env-v1`**. This decision requires the adapter below; it does not certify the generic patch alone.
+- **Adapter:** `muse-env-v1` is the generic patch plus injection of its **set half into each MCP server entry's `env` block**, plus hook-command wrapping during profile materialisation. Muse filters MCP stdio children to the fixed allowlist `HOME LANG LOGNAME MUSE_SESSION_ID PATH PWD SHELL SHLVL TERM TMPDIR USER` (R4); hooks also receive a fixed allowlist and their schema has no `env` field (R7a). Wrap **each** hook command as `env <set half> <cmd>`.
+- **Evidence:** tb-muse on ivmbp, `D8-muse-acceptance.md` and `D8-muse-results.md`, supplemented by the later updates recorded in D8 = (A): R0 control **PASS**; R1/R2 update path through the sink with no direct fallback **PASS**; R3 both cases and `ALL_PROXY` honoured by the launcher's curl **PASS**; R5 no non-loopback sockets **PASS**; R6 the binary's own model client **PASS**, exactly one `CONNECT api.meta.ai:443` through the sink, no retry. R4 MCP inheritance and R7a hook inheritance **FAIL as written**, mitigated by R4b explicit MCP `env` blocks and hook-command wrapping respectively.
+- **R6 unreachable-proxy closure:** a calibrated LOUD detector used `(deny network-outbound (with send-signal SIGKILL))`, allowing loopback and unix sockets. Controls `nc` and direct `curl` died with exit 137. Both Muse builds exited with a plain transport error and no SIGKILL, establishing no direct fallback. This later evidence closes R6 despite the earlier results file's pending status and unavailable sandbox denial logs.
+- **Exclusion:** control-plane bridges are excluded from the adapter and configure their own transport explicitly (N11).
+- **Placement / owner:** the adapter lives in the launch plane's Muse plugin, **TASK-261002-14shh7**, after D4 (**TASK-261002-143e84**). Shared MCP config is never rewritten.
+- **Open gap:** R7b, shell/tool children, was not reachable offline. Track [curator-network-profiles#18](https://github.com/relux-works/curator-network-profiles/issues/18) and tb-muse **TASK-261002-lfm3e9**, blocked on R2's PTY host. D8 = (A) retains this gap explicitly.
 
 ### 2.2 task-board spawn and runner: `skill-project-management`
 
-**Lands in:** N-C1 explicit selection / N-C2 defaults. `--network <name>` selects an id with explicit origin; later `runtimes.toml network` and `spawn.network.default` supply defaults. The detached runner inherits the orchestrator env (R/runtime.go:4764–4766); it is the destination host responsible for child unsets.
+**Lands in:** N-C1a explicit subagent selection / N-C2 defaults. Per **tb-R151, 2026-10-02 07:21Z**, N-C1 (**TASK-261002-re5ew4**) is split into **N-C1a**, subagent spawn, needing **D4 (TASK-261002-143e84) + v0.2.0 only**, and **N-C1b**, tb-sessiond hosts, after **M3 / LP Phase 0** (§2.3). Network-profile consumers get priority after the R131 top items; N-B is **TASK-261002-1g5dyh**. `--network <name>` selects an id with explicit origin; later `runtimes.toml network` and `spawn.network.default` supply defaults. The detached runner inherits the orchestrator env (R/runtime.go:4764–4766); it is the destination host responsible for child unsets.
 
-- **Preparation/application — advice §2.2(1), partly accepted:** “also serves the dry run” is correct; “does no I/O” is not (B/internal/spawn/launch_plan.go:202 calls catalog-reading `localModelsPeek`). Resolve/validate after slot claim (R/runtime.go:1905), then prepare, persist Record and refresh patch before every attempt at :2024. Carry only an ephemeral Config `EnvPatch` (`json:"-"`) to the composer. Apply last after `RuntimeControlEnvironment`, before B/internal/spawn/launch_plan.go:488, updating owned literals too. Real `planCommand` (spawn.go:1063–1071) and dry-run `BuildArgs` (:1414, call :1418) share it; plans skip probes. The launch-plane owner lands this final application with M2; other runner/cmd changes stay outside that zone. Earlier `/goal` probes (B/cmd/spawn.go:2343 → cmd/spawn_runtime.go:850–870) need resolution/patching **before their own spawn**, then freshness checks after the slot. A future BuildPlan hook replaces the final call only under §1's overlay proof.
+- **Preparation/application — advice §2.2(1), partly accepted:** “also serves the dry run” is correct; “does no I/O” is not (B/internal/spawn/launch_plan.go:202 calls catalog-reading `localModelsPeek`). Resolve/validate after slot claim (R/runtime.go:1905), then prepare, persist Record and refresh patch before every attempt at :2024. Carry only an ephemeral Config `EnvPatch` (`json:"-"`) to the composer. Apply last after `RuntimeControlEnvironment`, before B/internal/spawn/launch_plan.go:488, updating owned literals too. Real `planCommand` (spawn.go:1063–1071) and dry-run `BuildArgs` (:1414, call :1418) share it; plans skip probes. The launch-plane owner lands final application through D4; N-C1a no longer waits for M2/M3 (tb-R151). Other runner/cmd changes stay outside that zone. Earlier `/goal` probes (B/cmd/spawn.go:2343 → cmd/spawn_runtime.go:850–870) need resolution/patching **before their own spawn**, then freshness checks after the slot. A future BuildPlan hook replaces the final call only under §1's overlay proof.
 - **Manifest/rollback — advice §2.2(4):** “old binaries drop unknown keys silently” (R/runtime.go:4870–4875). Add Record beside `runtime_provenance` (:337; manifest :325–436), copy through `newSpawnRunManifest` (:803,840), `spawnConfigFromManifest` (:3205–3259), and `cloneSpawnRunSuccessor` (R/directives.go:743,892–979). `NetworkAccess` (:403) remains the codex sandbox flag. Require implementation round-trip coverage across all three paths and prohibit rollback of profiled runs to unaware binaries: they lose managed provenance and inherit ambient routing; a schema field cannot protect an old decoder.
 - **Suites — advice §2.2(3):** “Make both paths build the env the same way.” Do not apply harness patches to validation suites; share suite-environment construction. R/changerequest.go:271 → B/internal/changerequest/validation.go:189 strips selectors; B/internal/integration/validation.go:423 does not. Neither strips proxies, so different egress is possible, not inevitable. Inherited-route evidence is decided (tb-R148 D5): suite evidence records the route as ref and digest, or `ambient`, never proxy values. Keep raw-env integrate issue #419 within its existing scope.
 - **Control plane — advice §2.2(2), subsidiary claim REJECTED:** “The runner's own HTTP to board-server also picks up that proxy”. B/internal/remote/client.go:87–95 installs an explicit `http.Transport` with nil `Proxy`; that client does not consult inherited proxy variables. Preserve this separation and explicitly configured helper transports (N11).
@@ -109,7 +112,7 @@ A direct profile forbids endpoint, bypass hosts and probe target, needs confirma
 
 ### 2.3 tb-sessiond: `skill-project-management`
 
-**Lands in:** N-C1. Hosts build from daemon `os.Environ()` (H/codex_host.go:161–187,261–268; claude_host.go:700–727,2427–2450). Apply one shared helper **last** to `command.Env`, after TMPDIR at codex :178–179 and claude :710–711.
+**Lands in:** N-C1b (N-C1: TASK-261002-re5ew4), after M3 / LP Phase 0 (tb-R151). Hosts build from daemon `os.Environ()` (H/codex_host.go:161–187,261–268; claude_host.go:700–727,2427–2450). Apply one shared helper **last** to `command.Env`, after TMPDIR at codex :178–179 and claude :710–711.
 
 - **Carrier — advice §2.3(2):** “Send the ref, the origin and the expected digest”. Use that credential-free selector envelope in `OwnerRunContext` (H/launch_plan.go:123–136) and `PrimarySessionLaunchPlan` / `CodexSessionLaunch` (:74–86,138). The daemon re-resolves against its own catalog, confirmations, allowed set and verified tuple, checks the expected digest and probes locally. Strict decoders (:172,189,441; claude_host.go:426) fail closed. Bump `controlProtocolVersion` from 8 (H/types.go:31) and use client.go:71–100 restart diagnostics.
 - **Record/reuse — advice §2.3(1):** the live-host check was already proposed; add startup reconciliation too. Store Record in `ProviderHostRecord.Opaque` snapshots (H/claude_host.go:840; codex_host.go:336). Check before all `ensureHostLocked` paths (H/manager.go:1584): live fast path :1589–1604, Restore :1625, Launch :1678–1690; also before `restoreAndReconcileLocked` calls Restore at :1981 (:1964–1981). Existing unmanaged hosts refuse profiled assignments. Stop-only Restore paths (:918,2035) remain usable.
@@ -130,7 +133,7 @@ Also audit launcher release probes (L/cmd/curator-run/main.go:334,353 → A/inte
 
 ### 2.5 ax launch plan and session host
 
-**Q5 — OPEN (tb-R148 D6); recommended; Ivan decides; TODO(decision):** keep the Record extension (S/decisions/0013-execution-ownership-and-launch-plans.md:208–213), but require a negotiated, versioned network capability at the destination. Ax implementation owners enforce it; session-host owners own any bridge. X/README.md:5–7 is specification-only; ax proper (§5.1/§14.1) is absent from the supplied clones. Extension preservation alone proves no enforcement.
+**Q5 — D6 DEFERRED, Ivan, 2026-10-02 05:36Z:** deferred until ax implements session launch. [agent-session-manager#68](https://github.com/relux-works/agent-session-manager/issues/68) tracks carrier options, destination duties and refusal until then. Tracked `--network` keeps refusing (N9). Keep the Record extension (S/decisions/0013-execution-ownership-and-launch-plans.md:208–213), but require a negotiated, versioned network capability at the destination. Ax implementation owners enforce it; session-host owners own any bridge. X/README.md:5–7 is specification-only; ax proper (§5.1/§14.1) is absent from the supplied clones. Extension preservation alone proves no enforcement.
 
 The destination resolves/authorizes locally, compares expected digest, verifies its adapter tuple, preflights, applies unset then fresh set to its final env, and persists Record. Audit start/resume/fork/re-adoption; reject unsupported schemas or unaware hosts. Suppress conflicting old proxy literals before fresh application: 0013:304–313 otherwise replays them verbatim. Resume drift refuses `network_profile_drift` (environment-drift precedent :635–645); attach/resume uses full equality.
 
@@ -147,11 +150,12 @@ Presence-key signing for `confirm` (curator-trust §10) is not available. N-A al
 | Piece | Owner role / repository | Milestone | Depends on |
 | --- | --- | --- | --- |
 | library, provider, appendix | library owner / this repo | N-A, landed PR #12 | none |
-| typed launch-plane hook (§2.1) | launch-plane owner / skill-agents-management | optional N-B migration / N-C1 | N-A v0.1.0 tag (D10); environment decision under adopted Decision 0019 |
-| direct `curator run --network` | launcher owner / curator-agent-launcher | N-B | N-A tag; Compose-first allowed; remove final Compose patch only after overlay/parity proof |
-| tracked network | launcher + ax implementation owners; session-host bridge owner | after N-B | destination unset, resolution, drift and negotiated capability |
-| task-board runner | spawn-runtime owner / skill-project-management | N-C1 | M2; adopted inherited N3/N4 amendment (D2) |
-| tb-sessiond hosts | session-plane owner / skill-project-management | N-C1 | M3; LP Phase 0 for its own plans |
+| typed launch-plane hook (§2.1), D4 TASK-261002-143e84 | launch-plane owner / skill-agents-management | optional N-B migration / N-C1a | N-A tag (D10); environment decision under adopted Decision 0019 |
+| Muse `muse-env-v1` adapter, TASK-261002-14shh7 | launch-plane owner / skill-agents-management, Muse plugin | D8 = (A) (§2.1) | D4 TASK-261002-143e84 |
+| direct `curator run --network`, TASK-261002-1g5dyh | launcher owner / curator-agent-launcher | N-B | N-A tag; Compose-first allowed; remove final Compose patch only after overlay/parity proof |
+| tracked network | launcher + ax implementation owners; session-host bridge owner | D6 deferred until ax session launch | after N-B; destination unset, resolution, drift and negotiated capability; tracked selection keeps refusing (N9), agent-session-manager#68 |
+| task-board subagent spawn / runner, N-C1 TASK-261002-re5ew4 | spawn-runtime owner / skill-project-management | N-C1a | D4 TASK-261002-143e84 + v0.2.0 only (tb-R151); inherited N3/N4 amendment (D2) included in v0.2.0 |
+| tb-sessiond hosts, N-C1 TASK-261002-re5ew4 | session-plane owner / skill-project-management | N-C1b | M3 / LP Phase 0 (tb-R151) |
 | runtime/project/operator defaults | selection + launch-plane owners | N-C2 | M4 operator layer and bindings catalog |
 | trust-store confirm | trust owner / curator-trust | after N-A | curator-trust §10 |
 | managed gateway | library/gateway owner / this repo | N-D | N-A; no N-B/C dependency |
@@ -170,18 +174,18 @@ Consume the library **by tag**, never `replace` or `go.work`; `v0.1.0` is tagged
 
 ## 5. Decision card after advice
 
-Rev 2 is adopted as D1. Consumer implementation remains DRAFT; the following decisions are recorded from tb-R148:
+Rev 2 is adopted as D1. Consumer implementation remains DRAFT; the following decisions are recorded from tb-R148 and Ivan's 2026-10-02 updates via tb-keeper:
 
 | Item | Status / outcome |
 | --- | --- |
 | D1 | decided (tb-R148 D1): integration contract rev 2 ADOPTED; DRAFT until implemented by consumers |
 | D2 / Q2 | decided (tb-R148 D2): option (a), `inherited` origin; durable reference plus re-resolution on the child's host; explicit → inherited → runtime → project → operator, subject to host locks / allowed set |
-| D3 / explicit direct | decided (tb-R148 D3): option (b), named `kind = "direct"`, v0.2.0 (§2.2) |
+| D3 / explicit direct | decided (tb-R148 D3, 2026-10-02 05:26Z): option (b), named `kind = "direct"`, shipped in v0.2.0 (§2.2) |
 | D4 / Q1 | decided (tb-R148 D4): typed `Network{Patch, Record}` fields, not callbacks (§2.1) |
 | D5 / suites | decided (tb-R148 D5): evidence records route ref and digest, or `ambient`, never proxy values (§2.2) |
-| D6 / Q5 | OPEN; TODO(decision); recommended; Ivan decides: ax extension and destination capability (§2.5) |
+| D6 / Q5 | DEFERRED (Ivan, 2026-10-02 05:36Z) until ax implements session launch; tracked `--network` keeps refusing (N9); [agent-session-manager#68](https://github.com/relux-works/agent-session-manager/issues/68) (§2.5) |
 | D7 / Q6 | decided (tb-R148 D7): role-based ownership unchanged (§3) |
-| D8 / Q7 | decided (tb-R148 D8): Muse unsupported until verified; verification under way (§2.1) |
+| D8 / Q7 | decided (A) (Ivan, 2026-10-02 05:44Z): Muse 1.4.1-R4503.1 and 1.4.2-R4684.1 SUPPORTED with `muse-env-v1`; R7b shell/tool-child gap remains tracked in [#18](https://github.com/relux-works/curator-network-profiles/issues/18) / TASK-261002-lfm3e9 (§2.1) |
 | D9 | decided (tb-R148 D9): Decision 0019 adopted-status erratum fixed in both language specs and README |
 | D10 | decided (tb-R148 D10): v0.1.0 tagged; consumers use tags (§3) |
 
@@ -193,7 +197,9 @@ Q3 terminal retry drift and Q4 independent fresh sessions / equal-or-refuse live
 - Moved preparation/persistence to the runner, covered early probes, durable inheritance and terminal retries; qualified existing plumbing and rejected the board-client HTTP proxy claim with nil-Proxy evidence (advice §2.2(1–2), Q2–Q3).
 - Added suite separation/evidence decision and rollback/round-trip requirements; retained normalized credential refusal and Record-only serialization (advice §2.2(3–5)).
 - Added reconciliation, local selector resolution/protocol bump, profiled-startup refusal and session-patched preflight/assay; corrected the fresh-session premise (advice §2.3(1–4), Q4).
-- Replaced unanswered questions with card-C recommendations, deferred explicit direct, corrected mixed-case reservation, trust dispatch, N-A status, overlay migration and N-D dependency; replaced the ownership-transfer assumption with unchanged role ownership (Q1, Q5–Q7).
-- Recorded adoption and decisions tb-R148 D1, D2, D4, D5, D7–D10 on 2026-10-02; ax extension (D6) remains OPEN.
-
-- Recorded D3 option (b), named direct in v0.2.0, and D8 R4/R4b Muse per-server env injection requirements on 2026-10-02; Muse remains unsupported pending R6/R7.
+- Replaced unanswered questions with card-C recommendations, initially deferred explicit direct (superseded by D3 below), corrected mixed-case reservation, trust dispatch, N-A status, overlay migration and N-D dependency; replaced the ownership-transfer assumption with unchanged role ownership (Q1, Q5–Q7).
+- Recorded adoption and decisions tb-R148 D1, D2, D4, D5, D7–D10 on 2026-10-02; subsequent D6 and D8 outcomes are recorded below.
+- Recorded D3 decided option (b), named direct shipped in v0.2.0 (2026-10-02 05:26Z).
+- Recorded D6 deferred until ax session launch (05:36Z), agent-session-manager#68 and continued tracked-mode refusal (N9).
+- Recorded D8 = (A) (05:44Z): both exact Muse builds supported with `muse-env-v1`, per-server MCP env injection and hook-command wrapping; acceptance rows and calibrated SIGKILL evidence; N11 exclusions, Muse-plugin ownership and the open R7b gap (#18 / TASK-261002-lfm3e9).
+- Split N-C1 into N-C1a (D4 + v0.2.0 only) and N-C1b (after M3 / LP Phase 0), per tb-R151 (07:21Z); recorded N-C1, N-B and D4 task ids and consumer priority after the R131 top items.

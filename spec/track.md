@@ -18,7 +18,8 @@ Several agents on one machine must reach the network through different applicati
 | --- | --- | --- | --- |
 | N-A | library, the file `~/.curator/network.toml`, the provider `curator-network` with `curator network exec <name> -- <cmd>` and `check --probe`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses | landed (PR #12, 2026-10-01) |
 | N-B | `curator run --network` | the launcher applies the patch through this library | [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
-| N-C1 | explicit profile on every task-board and tb-sessiond process path, run manifests | a child and a board session use the profile, including retry and resume | [#8](https://github.com/relux-works/curator-network-profiles/issues/8) |
+| N-C1a | explicit profile on task-board subagent spawn paths, run manifests; depends on D4 + v0.2.0 only | a child uses the profile, including retry and resume | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4; D4 TASK-261002-143e84 |
+| N-C1b | explicit profile on tb-sessiond host process paths; after M3 / LP Phase 0 | a board session uses the profile, including resume and host reuse | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4 |
 | N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag | [#9](https://github.com/relux-works/curator-network-profiles/issues/9) |
 | N-D | managed gateway (sing-box), then the enforced sandbox epic | automatic proxy provisioning | [#10](https://github.com/relux-works/curator-network-profiles/issues/10) |
 
@@ -28,7 +29,7 @@ How each process owner applies the patch, where the binding is recorded, and how
 
 ## Dependencies
 
-N-C1 needs M2 and M3 (task-board and tb-sessiond build launches through the module); N-C2 needs M4 (operator layer and bindings). The Apiary tool bridge must keep its own transport outside the harness's profile (NP-N11).
+Per tb-R151 (2026-10-02 07:21Z), N-C1 is split: N-C1a (subagent spawn) needs D4 (TASK-261002-143e84) + v0.2.0 only; N-C1b (tb-sessiond hosts) follows M3 / LP Phase 0. N-C1 remains TASK-261002-re5ew4; N-B is TASK-261002-1g5dyh. Network-profile consumers get priority after the R131 top items. N-C2 needs M4 (operator layer and bindings). The Apiary tool bridge must keep its own transport outside the harness's profile (NP-N11).
 
 ## Repository
 
