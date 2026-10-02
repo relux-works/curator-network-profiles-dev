@@ -139,15 +139,15 @@ func TestAppendixMatchesVectors(t *testing.T) {
 		}
 	}
 	for _, d := range set.Digest {
-		if !strings.Contains(doc, d.Digest) {
+		if !containsRequiredText(doc, d.Digest) {
 			t.Errorf("appendix never prints the digest of %s", d.ID)
 		}
-		if !strings.Contains(doc, d.Canonical) {
+		if !containsRequiredText(doc, d.Canonical) {
 			t.Errorf("appendix never prints the canonical bytes of %s", d.ID)
 		}
 	}
 	for _, code := range refusal.Codes() {
-		if !strings.Contains(doc, "`"+code+"`") {
+		if !containsRequiredText(doc, "`"+code+"`") {
 			t.Errorf("appendix does not list refusal code %s", code)
 		}
 	}

@@ -1,9 +1,6 @@
 package contract_test
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 func TestBuildAndDemoSafetyContract(t *testing.T) {
 	for _, tc := range []struct {
@@ -17,7 +14,7 @@ func TestBuildAndDemoSafetyContract(t *testing.T) {
 		t.Run(tc.file, func(t *testing.T) {
 			doc := repoFile(t, tc.file)
 			for _, s := range tc.required {
-				if !strings.Contains(doc, s) {
+				if !containsRequiredText(doc, s) {
 					t.Errorf("%s lacks %q", tc.file, s)
 				}
 			}
@@ -28,7 +25,7 @@ func TestBuildAndDemoSafetyContract(t *testing.T) {
 func TestErrorAndRecordDocumentation(t *testing.T) {
 	appendix := repoFile(t, "spec/contract-appendix.md")
 	for _, s := range []string{"relux-network-binding-record-v1", "absent `network` key", "cannot read or write", "curator-network-version-v1", "`entrypoint` (the provider's `exec` fills `harness = \"exec\"`, `entrypoint =\nthe sanitized basename of argv[0] (see §5)`, `build = \"\"`)."} {
-		if !strings.Contains(appendix, s) {
+		if !containsRequiredText(appendix, s) {
 			t.Errorf("appendix lacks %q", s)
 		}
 	}
@@ -38,7 +35,7 @@ func TestRound3Documentation(t *testing.T) {
 	for _, file := range []string{"spec/contract-appendix.md", "docs/architecture.md"} {
 		doc := repoFile(t, file)
 		for _, required := range []string{"operands and flag values are never echoed", "held catalog edit lock", "network.toml.lock", "no CLI cleanup", "TODO(decision)", "`confirm` prompts before taking the catalog edit lock", "catalog changed during confirm; run confirm again", "integer `argc`", "otherwise `<command>`", "Unknown-key refusals report a count"} {
-			if !strings.Contains(doc, required) {
+			if !containsRequiredText(doc, required) {
 				t.Errorf("%s lacks %q", file, required)
 			}
 		}
