@@ -1,7 +1,7 @@
 version = 1
 
 [[annotations]]
-path = ["*.md", "docs/**", "spec/**", "testdata/**", "go.mod", "go.sum", ".gitignore", "LICENSE", "NOTICE", "REUSE.toml"]
+path = ["*.md", "docs/**", "spec/**", "testdata/**", "go.mod", "go.sum", ".gitignore", "LICENSE", "NOTICE", "REUSE.toml", "pkg/adapterprobe/qualified.json"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Ivan Oparin, Relux Works"
 SPDX-License-Identifier = "Apache-2.0"

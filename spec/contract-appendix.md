@@ -1903,6 +1903,27 @@ means the embedded set only. No failure silently passes. The shipped
 embedded list is currently empty and is always enforced, even when the
 operator supplies an empty set.
 
+The shipped qualified-builds list (`relux-adapter-qualified-v1`)
+carries centrally qualified exact builds. The document MUST be a
+closed JSON object with exactly the members `schema` and `builds`;
+each entry is a closed object with exactly `harness`, `adapter`,
+`entrypoint`, `recipe`, `binary_sha256`, `os`, `arch`,
+`evidence_sha256` and `run_url`. Member spellings are exact and
+case-sensitive; duplicates, aliases, unknown members, missing or null
+members, wrong types and trailing data refuse as
+`qualified_corrupt`. Both digests MUST be 64 lowercase hex, the
+adapter MUST be `generic-env-v1`, and the run URL MUST be an absolute
+https URL without userinfo. A single well-formed unknown schema
+refuses as `qualified_version_unsupported`. Consumers merge the
+shipped entries into the allowlist with `EmbeddedQualified()`;
+entries are filtered by `os` AND `arch` for the current platform
+before SHA-256 deduplication (first matching-platform digest wins),
+then keyed by binary SHA-256 with platform from `os` and the
+`generic-proxy-transport-v1` scope, while the evidence digest and the
+run URL stay as audit provenance. A record never qualifies a build on
+another platform. The shipped list is currently empty; records enter
+through reviewed qualification evidence, never from version labels.
+
 Cache keys are exactly the binary SHA-256, never a version string.
 The optimistic evidence lookup is the seam for central qualification:
 a future signed-evidence source plugs in ahead of the unqualified

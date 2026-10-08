@@ -1,0 +1,2978 @@
+# SPDX-License-Identifier: Apache-2.0
+# Central qualification of one adapter build.
+#
+# Dispatch with harness/version/adapter/entrypoint. Three jobs on fresh
+# runners separate untrusted bytes from trusted measurement and
+# attestation around a DEDICATED-UID BOUNDARY (the same mechanism the
+# platform plans for per-agent isolation). Vendor code never runs with
+# the same authority as the controller that measures it.
+#
+# - "fetch" (contents:read only) obtains the exact requested build
+#   WITHOUT executing any vendor code: no install scripts, no package
+#   lifecycle scripts (npm --ignore-scripts plus a direct tarball
+#   download verified against the pinned registry integrity). It
+#   verifies a vendor checksum where one is published, records the
+#   provenance, and uploads the bytes as an artifact. The bytes are
+#   UNTRUSTED DATA.
+# - "measure" (no OIDC, no attestation permissions) runs the controller
+#   as root (passwordless sudo on hosted runners). It places the bytes
+#   in a root-owned read-only path and hashes them there (the exact
+#   executable the launcher would hash), creates two fresh users
+#   (`qualify` for the workload, `qsink` for the loopback proxy sink),
+#   confines the qualify UID to the sink's loopback port only
+#   (Linux iptables owner match; macOS pf user rules), runs each phase
+#   as qualify, kills all qualify processes after each phase
+#   (pkill -U) and verifies an empty set (inspection errors are
+#   distinguished from an empty set), attributes each phase to a fresh
+#   qsink-owned log that qualify cannot write, and finalizes evidence
+#   from root-copied, hashed log bytes. On macOS, any guarantee that
+#   cannot be made marks the leg diagnostic and ineligible with an
+#   exact reason.
+# - "attest" (id-token/attestations write, contents/actions read) runs
+#   on a fresh runner, downloads the bundle with --repo bound to this
+#   run AND this run attempt, verifies the per-leg status and every
+#   digest, and attests exactly ONE evidence file at ONE fixed
+#   subject-path. It runs only reviewed workflow code and the pinned
+#   attestation action; it never executes an uploaded script.
+#
+# Credential claim: no operator or vendor credentials exist anywhere in
+# this workflow (no login; the stimulus uses a documented synthetic
+# invalid key the sink never forwards). Short-lived GitHub attestation
+# credentials exist only in the attest job. The fetch and measure jobs
+# never see attestation credentials.
+#
+# Attestation policy: only evidence with verdict "pass" and eligible
+# true is attested. Failure and diagnostic evidence is uploaded for
+# review and is never attested.
+#
+# Input handling: every dispatch value is validated as a whole against
+# an anchored allowlist (single line, bounded) before setup or fetch,
+# and re-validated wherever it is used. No input reaches a shell
+# unquoted, and no Actions expression is interpolated into a run
+# script. Artifact names derive from the matrix and run attempt only,
+# never from raw inputs.
+#
+# Evidence shape: each phase (calibration, version, stimulus) gets its
+# own sink and log on one sink port reused sequentially. Only a CONNECT
+# in the frozen stimulus-phase log can satisfy the verdict, and only
+# after the qualify UID was proven empty before that sink was exposed.
+# Logs are hashed after their sinks have exited; the uploaded bytes are
+# exactly the hashed bytes. The verdict encodes the automated
+# eligibility predicate (see verdict.py and
+# docs/harness-verification.md): a recorded hash is not a
+# qualification until it is verified and eligible. Setup failures also
+# finalize structured failure evidence with explicit phase statuses
+# (failed vs not reached).
+#
+# Bundle layout (R2): each measure leg assembles exactly one controlled
+# bundle root `./bundle/` with these documented relative names only
+# (files absent on a leg or on early failure are simply not present;
+# their absence is recorded as failure/not-reached in evidence):
+#   evidence.json, sink-calibration.jsonl, sink-version.jsonl,
+#   sink-stimulus.jsonl, fetch-provenance.json, registry.json,
+#   npm-receipt.json, calibration.log, version.json, stimulus.json,
+#   finish-status.json, phase-status.json, stage.json, sink-port.txt,
+#   uid-map.json, rules4.txt, rules6.txt (Linux),
+#   counters4-cal-before.txt, counters4-cal-after.txt,
+#   counters6-cal-before.txt, counters6-cal-after.txt,
+#   counters4-version-before.txt, counters4-version-after.txt,
+#   counters6-version-before.txt, counters6-version-after.txt,
+#   counters4-stimulus-before.txt, counters4-stimulus-after.txt,
+#   counters6-stimulus-before.txt, counters6-stimulus-after.txt (Linux),
+#   pf-rules.txt, pf-counters-before.txt, pf-counters-after.txt,
+#   pf-counters-version-after.txt, pf-counters-stimulus-after.txt,
+#   macos-confinement.json (macOS).
+# The evidence artifact uploads these files only (least common ancestor
+# `bundle/`, so the artifact root holds exactly these names). The
+# attest job downloads with --repo and the attempt-bound artifact name,
+# moves the single evidence file to the fixed subject-path
+# `attest-bundle/evidence.json` by exact constructed path (no fallback
+# search), verifies it and the bundled log digests, and attests that
+# one path. Diagnostics travel in a separate attempt-bound artifact
+# from an explicit diagnostics-only export directory (R1); the staged
+# executable, supervisor code and finalized evidence are never opened
+# for writing and never truncated.
+#
+# What the evidence proves (and does not prove) is defined in
+# docs/harness-verification.md: an attributed CONNECT to the expected
+# host through the proxy, plus zero counted direct attempts under UID
+# confinement for that stimulus on Linux; containment-only or
+# diagnostic on macOS as recorded. It does not prove an authenticated
+# model operation, fallback behavior, hooks, tools, MCP children,
+# interactive mode, other platforms, other recipes, or any other
+# build.
+name: qualify-adapter
+
+on:
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: 'Harness to qualify (only claude-code for now)'
+        required: true
+        default: 'claude-code'
+        type: choice
+        options: ['claude-code']
+      version:
+        description: 'Exact harness version, for example 2.1.290'
+        required: true
+        type: string
+      adapter:
+        description: 'Adapter under test'
+        required: true
+        default: 'generic-env-v1'
+        type: choice
+        options: ['generic-env-v1']
+      entrypoint:
+        description: 'Harness entrypoint under test'
+        required: true
+        default: 'exec'
+        type: choice
+        options: ['exec']
+
+permissions: {}
+
+run-name: qualify ${{ inputs.harness }} ${{ inputs.version }} (${{ inputs.adapter }}/${{ inputs.entrypoint }})
+
+jobs:
+  fetch:
+    name: fetch (${{ matrix.runs_on }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runs_on: macos-latest
+            goos: darwin
+            goarch: arm64
+          - runs_on: macos-15-intel
+            goos: darwin
+            goarch: amd64
+    env:
+      QUALIFY_HARNESS: ${{ inputs.harness }}
+      QUALIFY_VERSION: ${{ inputs.version }}
+      QUALIFY_ADAPTER: ${{ inputs.adapter }}
+      QUALIFY_ENTRYPOINT: ${{ inputs.entrypoint }}
+      QUALIFY_GOOS: ${{ matrix.goos }}
+      QUALIFY_GOARCH: ${{ matrix.goarch }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import os, re, sys
+          VERSION_RE = r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}"
+          def valid(harness, version, adapter, entrypoint):
+              if harness != "claude-code":
+                  return False
+              if adapter != "generic-env-v1":
+                  return False
+              if entrypoint != "exec":
+                  return False
+              # Anchored allowlist on the WHOLE value: single line, digits
+              # and dots only, bounded length. No newline/control input can
+              # smuggle an npm URL, git, file or alias specifier past this.
+              return len(version) <= 32 and re.fullmatch(VERSION_RE, version) is not None
+          # Inert self-test: fixed strings only, no network, no install.
+          # Keep in sync with the measure/attest validators below.
+          cases = [
+              ("claude-code", "2.1.290", "generic-env-v1", "exec", True),
+              ("claude-code", "0.0.1", "generic-env-v1", "exec", True),
+              ("claude-code", "10.20.300", "generic-env-v1", "exec", True),
+              ("claude-code", "git+https://example.invalid/payload.git#\n2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290\n", "generic-env-v1", "exec", False),
+              ("claude-code", "\n2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290\r\n", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.29\t0", "generic-env-v1", "exec", False),
+              ("claude-code", "latest", "generic-env-v1", "exec", False),
+              ("claude-code", "file:../evil", "generic-env-v1", "exec", False),
+              ("claude-code", "npm:other@1.0.0", "generic-env-v1", "exec", False),
+              ("claude-code", "https://example.invalid/pkg.tgz", "generic-env-v1", "exec", False),
+              ("claude-code", "git+ssh://example.invalid/x.git", "generic-env-v1", "exec", False),
+              ("claude-code", "@anthropic-ai/claude-code@2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290-beta", "generic-env-v1", "exec", False),
+              ("claude-code", "v2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", " 2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290 ", "generic-env-v1", "exec", False),
+              ("claude-code", "", "generic-env-v1", "exec", False),
+              ("other", "2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code\n", "2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290", "codex-env-v1", "exec", False),
+              ("claude-code", "2.1.290", "generic-env-v1", "app-server", False),
+          ]
+          for harness, version, adapter, entrypoint, want in cases:
+              if valid(harness, version, adapter, entrypoint) != want:
+                  print("validator self-test failed for %r" % ((harness, version, adapter, entrypoint),))
+                  sys.exit(1)
+          if not valid(os.environ.get("QUALIFY_HARNESS", ""),
+                        os.environ.get("QUALIFY_VERSION", ""),
+                        os.environ.get("QUALIFY_ADAPTER", ""),
+                        os.environ.get("QUALIFY_ENTRYPOINT", "")):
+              print("dispatch inputs are not an exact pinned build request")
+              sys.exit(1)
+          print("inputs valid")
+          PYEOF
+          want=""
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) want="linux/amd64" ;;
+            Darwin/arm64) want="darwin/arm64" ;;
+            Darwin/x86_64) want="darwin/amd64" ;;
+          esac
+          if [ -z "${want}" ] || [ "${want}" != "${QUALIFY_GOOS}/${QUALIFY_GOARCH}" ]; then
+            echo "runner $(uname -s)/$(uname -m) does not match matrix ${QUALIFY_GOOS}/${QUALIFY_GOARCH}"
+            exit 1
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+
+      - name: Fetch the exact build without executing vendor code
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/fetch"
+          mkdir -p "${QDIR}"
+          OUTDIR="${QDIR}/fetch-out"
+          mkdir -p "${OUTDIR}"
+          REGISTRY="https://registry.npmjs.org/"
+          echo "QUALIFY_REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
+          # No vendor code runs in this job: registry metadata via npm view
+          # (JSON only), tarball via curl, extraction via tar, dependency
+          # tree via npm --ignore-scripts (lifecycle disabled). Every step
+          # below is reviewed workflow code or pinned tooling.
+          npm view --registry="${REGISTRY}" --json "@anthropic-ai/claude-code@${QUALIFY_VERSION}" > "${QDIR}/registry-full.json"
+          python3 - "${QDIR}/registry-full.json" "${QDIR}/registry.json" <<'PYEOF'
+          import json, sys
+          src, dst = sys.argv[1], sys.argv[2]
+          with open(src, encoding="utf-8") as handle:
+              meta = json.load(handle)
+          if isinstance(meta, list):
+              meta = meta[0] if len(meta) == 1 else {}
+          dist = meta.get("dist") or {}
+          record = {"name": meta.get("name", ""),
+                    "version": meta.get("version", ""),
+                    "dist": {"tarball": dist.get("tarball", ""),
+                             "integrity": dist.get("integrity", ""),
+                             "signatures": dist.get("signatures", [])}}
+          if not record["name"] or not record["version"] or not record["dist"]["tarball"] or not record["dist"]["integrity"]:
+              raise SystemExit("registry record is missing name/version/dist provenance")
+          with open(dst, "w", encoding="utf-8") as handle:
+              json.dump(record, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps({k: (v if k != "dist" else {ik: (iv if ik != "signatures" else ("present" if iv else "absent")) for ik, iv in v.items()}) for k, v in record.items()}, indent=2))
+          PYEOF
+          rm -f "${QDIR}/registry-full.json"
+          python3 - "${QDIR}/registry.json" "${QUALIFY_VERSION}" <<'PYEOF'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              reg = json.load(handle)
+          want = sys.argv[2]
+          if reg.get("name") != "@anthropic-ai/claude-code":
+              raise SystemExit("registry name mismatch: %r" % (reg.get("name"),))
+          if reg.get("version") != want:
+              raise SystemExit("registry version mismatch: %r" % (reg.get("version"),))
+          tarball = (reg.get("dist") or {}).get("tarball", "")
+          if not tarball.startswith("https://registry.npmjs.org/"):
+              raise SystemExit("registry tarball is not under the pinned registry")
+          print("registry record pins the requested build")
+          PYEOF
+          TARBALL="$(python3 -c 'import json; print(json.load(open("'"${QDIR}"'/registry.json", encoding="utf-8"))["dist"]["tarball"])')"
+          case "${TARBALL}" in
+            https://registry.npmjs.org/*) ;;
+            *) echo "tarball URL is not under the pinned registry"; exit 1 ;;
+          esac
+          curl --fail --silent --show-error --location --retry 3 --output "${QDIR}/package.tgz" "${TARBALL}"
+          python3 - "${QDIR}/package.tgz" "${QDIR}/registry.json" "${QDIR}/tarball-verify.json" <<'PYEOF'
+          import base64, hashlib, json, sys
+          tarball_path, registry_path, out = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(registry_path, encoding="utf-8") as handle:
+              reg = json.load(handle)
+          integrity = (reg.get("dist") or {}).get("integrity", "")
+          # npm integrity is `algo-base64digest` (usually sha512). Verify
+          # the downloaded bytes against it; this is the vendor checksum.
+          algo, sep, b64 = integrity.partition("-")
+          if not sep or algo not in hashlib.algorithms_available:
+              raise SystemExit("unsupported registry integrity algorithm")
+          digest = hashlib.new(algo)
+          sha256 = hashlib.sha256()
+          with open(tarball_path, "rb") as handle:
+              for chunk in iter(lambda: handle.read(65536), b""):
+                  digest.update(chunk)
+                  sha256.update(chunk)
+          got = base64.b64encode(digest.digest()).decode("ascii")
+          if got != b64:
+              raise SystemExit("tarball integrity mismatch against the registry record")
+          with open(out, "w", encoding="utf-8") as handle:
+              json.dump({"integrity": integrity, "verified": True,
+                         "tarball_sha256": sha256.hexdigest()}, handle, indent=2)
+              handle.write("\n")
+          print("tarball integrity verified: " + algo)
+          PYEOF
+          # Isolated dependency tree WITHOUT lifecycle scripts. This still
+          # extracts optional platform packages for THIS runner's platform,
+          # but runs no install/prepare/postinstall code.
+          PREFIX="${QDIR}/prefix"
+          mkdir -p "${PREFIX}"
+          npm install --prefix "${PREFIX}" --ignore-scripts --no-audit --no-fund --no-update-notifier --registry="${REGISTRY}" "@anthropic-ai/claude-code@${QUALIFY_VERSION}"
+          # Trusted receipt: npm's own lockfile (written by npm, not vendor
+          # payload). The installed package.json _resolved/_integrity fields
+          # are payload and are NOT trusted (see F7).
+          if [ -f "${PREFIX}/node_modules/.package-lock.json" ]; then
+            cp "${PREFIX}/node_modules/.package-lock.json" "${QDIR}/npm-receipt.json"
+          elif [ -f "${PREFIX}/package-lock.json" ]; then
+            cp "${PREFIX}/package-lock.json" "${QDIR}/npm-receipt.json"
+          else
+            echo "npm wrote no lockfile receipt; refusing"
+            exit 1
+          fi
+          npm ls --prefix "${PREFIX}" @anthropic-ai/claude-code --depth=0 --json > "${QDIR}/npm-ls.json" || true
+          node --version > "${QDIR}/node.txt"
+          npm --version > "${QDIR}/npm.txt"
+          python3 - "${QDIR}" "${PREFIX}" "${QUALIFY_VERSION}" "${QUALIFY_GOOS}" "${QUALIFY_GOARCH}" <<'PYEOF'
+          import hashlib, json, os, sys
+          qdir, prefix, want_version, goos, goarch = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+          def load(name):
+              with open(os.path.join(qdir, name), encoding="utf-8") as handle:
+                  return json.load(handle)
+          registry = load("registry.json")
+          with open(os.path.join(qdir, "tarball-verify.json"), encoding="utf-8") as handle:
+              tarball_verify = json.load(handle)
+          # Resolve the executable the launcher would hash: the installed
+          # package's bin entry, without executing anything.
+          pkg_path = os.path.join(prefix, "node_modules", "@anthropic-ai", "claude-code", "package.json")
+          try:
+              with open(pkg_path, encoding="utf-8") as handle:
+                  pkg = json.load(handle)
+          except OSError as exc:
+              raise SystemExit("missing installed package.json: %s" % (exc,))
+          if pkg.get("name") != "@anthropic-ai/claude-code":
+              raise SystemExit("installed package name mismatch: %r" % (pkg.get("name"),))
+          if pkg.get("version") != want_version:
+              raise SystemExit("installed package version mismatch: %r" % (pkg.get("version"),))
+          if registry.get("version") != want_version:
+              raise SystemExit("registry version mismatch")
+          bin_entry = pkg.get("bin", {})
+          if isinstance(bin_entry, str):
+              rel = bin_entry
+          elif isinstance(bin_entry, dict):
+              rel = bin_entry.get("claude", "")
+          else:
+              rel = ""
+          if not rel:
+              # Fall back to the .bin symlink the launcher would resolve.
+              link = os.path.join(prefix, "node_modules", ".bin", "claude")
+              resolved = os.path.realpath(link)
+          else:
+              base = os.path.join(prefix, "node_modules", "@anthropic-ai", "claude-code", rel)
+              resolved = os.path.realpath(base)
+          if not os.path.isfile(resolved):
+              raise SystemExit("resolved harness is not a file")
+          # Native predicates WITHOUT execution: read 4 magic bytes and
+          # size only. 64-bit or universal Mach-O on macOS (32-bit magic
+          # is explicitly ineligible); ELF on Linux. Library size limit
+          # 256 MiB (probe.go) is enforced here.
+          with open(resolved, "rb") as handle:
+              magic = handle.read(4)
+          size = os.path.getsize(resolved)
+          if goos == "linux":
+              native = magic == b"\x7fELF"
+              arch_detail = "ELF"
+          elif goos == "darwin":
+              if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
+                  native, arch_detail = True, "Mach-O 64-bit"
+              elif magic in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+                  native, arch_detail = True, "Mach-O universal"
+              else:
+                  native, arch_detail = False, "non-64-bit-Mach-O magic=" + magic.hex()
+          else:
+              native, arch_detail = False, "unsupported OS"
+          size_ok = size <= 268435456
+          digest = hashlib.sha256()
+          with open(resolved, "rb") as handle:
+              for chunk in iter(lambda: handle.read(65536), b""):
+                  digest.update(chunk)
+          sha256 = digest.hexdigest()
+          # npm receipt agreement (npm's own record, not vendor payload).
+          try:
+              receipt = load("npm-receipt.json")
+              receipt_present = True
+          except (OSError, ValueError):
+              receipt, receipt_present = {}, False
+          try:
+              npm_ls = load("npm-ls.json")
+              npm_ls_version = npm_ls["dependencies"]["@anthropic-ai/claude-code"]["version"]
+          except (OSError, ValueError, KeyError, TypeError):
+              npm_ls_version = "unavailable"
+          # Publisher native manifest/signature: record what the registry
+          # and package publish. npm registry `dist.signatures` (when
+          # present) and any in-package manifest are recorded; absence is
+          # recorded as unavailable, not as verified. The measure verdict
+          # states precisely what this does and does not establish (F7).
+          signatures = (registry.get("dist") or {}).get("signatures", [])
+          manifest_status = "unavailable"
+          manifest_detail = ("no pinned publisher per-platform binary digest/signature published "
+                             "in the registry record or package for this version/platform; provenance is "
+                             "registry tarball integrity plus npm receipt plus name/version/source agreement, "
+                             "not a publisher binary-signature verification")
+          if signatures:
+              manifest_status = "registry-signatures-present-unverified"
+              manifest_detail = ("registry dist.signatures present but no pinned publisher verification key "
+                                 "is configured in this workflow; signatures recorded, not cryptographically verified")
+          provenance = {
+              "registry": registry.get("dist", {}).get("tarball", ""),
+              "registry_integrity": registry.get("dist", {}).get("integrity", ""),
+              "integrity_verified": tarball_verify.get("verified") is True,
+              "tarball_sha256": tarball_verify.get("tarball_sha256", ""),
+              "installed_name": pkg.get("name", ""),
+              "installed_version": pkg.get("version", ""),
+              "npm_ls_version": npm_ls_version,
+              "receipt_present": receipt_present,
+              "resolved_suffix": os.path.basename(resolved),
+              "sha256": sha256,
+              "size": size,
+              "size_ok": size_ok,
+              "magic": magic.hex(),
+              "arch_detail": arch_detail,
+              "native_eligible": bool(native) and size_ok,
+              "native_manifest_status": manifest_status,
+              "native_manifest_detail": manifest_detail,
+              "goos": goos,
+              "goarch": goarch,
+          }
+          with open(os.path.join(qdir, "fetch-out", "fetch-provenance.json"), "w", encoding="utf-8") as handle:
+              json.dump(provenance, handle, indent=2)
+              handle.write("\n")
+          # Copy the exact bytes for the measure leg. These are UNTRUSTED
+          # DATA until the measure controller stages and hashes them in a
+          # root-owned path.
+          with open(resolved, "rb") as src, open(os.path.join(qdir, "fetch-out", "harness"), "wb") as dst:
+              for chunk in iter(lambda: src.read(65536), b""):
+                  dst.write(chunk)
+          import shutil
+          shutil.copy(os.path.join(qdir, "registry.json"), os.path.join(qdir, "fetch-out", "registry.json"))
+          shutil.copy(os.path.join(qdir, "npm-receipt.json"), os.path.join(qdir, "fetch-out", "npm-receipt.json"))
+          print(json.dumps({k: provenance[k] for k in ("sha256", "size", "magic", "arch_detail", "native_eligible", "native_manifest_status")}, indent=2))
+          # Fetch succeeds even for a non-native candidate so the measure
+          # leg can finalize explicit ineligible evidence; eligibility is
+          # decided in measure, never here.
+          PYEOF
+          ls -la "${OUTDIR}"
+
+      - name: Upload fetch bundle (untrusted data)
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fetch-${{ matrix.goos }}-${{ matrix.goarch }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/fetch/fetch-out/harness
+            ${{ runner.temp }}/fetch/fetch-out/fetch-provenance.json
+            ${{ runner.temp }}/fetch/fetch-out/registry.json
+            ${{ runner.temp }}/fetch/fetch-out/npm-receipt.json
+          if-no-files-found: error
+
+  measure:
+    name: measure (${{ matrix.runs_on }})
+    needs: fetch
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs_on: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runs_on: macos-latest
+            goos: darwin
+            goarch: arm64
+          - runs_on: macos-15-intel
+            goos: darwin
+            goarch: amd64
+    env:
+      QUALIFY_HARNESS: ${{ inputs.harness }}
+      QUALIFY_VERSION: ${{ inputs.version }}
+      QUALIFY_ADAPTER: ${{ inputs.adapter }}
+      QUALIFY_ENTRYPOINT: ${{ inputs.entrypoint }}
+      QUALIFY_GOOS: ${{ matrix.goos }}
+      QUALIFY_GOARCH: ${{ matrix.goarch }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import os, re, sys
+          VERSION_RE = r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}"
+          def valid(harness, version, adapter, entrypoint):
+              if harness != "claude-code":
+                  return False
+              if adapter != "generic-env-v1":
+                  return False
+              if entrypoint != "exec":
+                  return False
+              return len(version) <= 32 and re.fullmatch(VERSION_RE, version) is not None
+          cases = [
+              ("claude-code", "2.1.290", "generic-env-v1", "exec", True),
+              ("claude-code", "git+https://example.invalid/payload.git#\n2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290\n", "generic-env-v1", "exec", False),
+              ("claude-code", "latest", "generic-env-v1", "exec", False),
+              ("other", "2.1.290", "generic-env-v1", "exec", False),
+          ]
+          for harness, version, adapter, entrypoint, want in cases:
+              if valid(harness, version, adapter, entrypoint) != want:
+                  print("validator self-test failed")
+                  sys.exit(1)
+          if not valid(os.environ.get("QUALIFY_HARNESS", ""),
+                        os.environ.get("QUALIFY_VERSION", ""),
+                        os.environ.get("QUALIFY_ADAPTER", ""),
+                        os.environ.get("QUALIFY_ENTRYPOINT", "")):
+              print("dispatch inputs are not an exact pinned build request")
+              sys.exit(1)
+          print("inputs valid")
+          PYEOF
+          want=""
+          case "$(uname -s)/$(uname -m)" in
+            Linux/x86_64) want="linux/amd64" ;;
+            Darwin/arm64) want="darwin/arm64" ;;
+            Darwin/x86_64) want="darwin/amd64" ;;
+          esac
+          if [ -z "${want}" ] || [ "${want}" != "${QUALIFY_GOOS}/${QUALIFY_GOARCH}" ]; then
+            echo "runner $(uname -s)/$(uname -m) does not match matrix ${QUALIFY_GOOS}/${QUALIFY_GOARCH}"
+            exit 1
+          fi
+
+      - name: Download the fetch bundle (untrusted data)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          mkdir -p "${QDIR}"
+          rm -rf fetch-tmp
+          mkdir -p fetch-tmp
+          # Bound to this run AND this run attempt: a failed rerun cannot
+          # reuse a previous attempt's same-named bundle (R2).
+          ART="fetch-${QUALIFY_GOOS}-${QUALIFY_GOARCH}-attempt-${GITHUB_RUN_ATTEMPT}"
+          gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "${ART}" --dir fetch-tmp
+          # Exact constructed path only: no fallback search (R2). The fetch
+          # job uploads with least common ancestor fetch-out/, so the
+          # artifact root holds exactly these names.
+          for name in harness fetch-provenance.json registry.json npm-receipt.json; do
+            src="fetch-tmp/${ART}/${name}"
+            if [ ! -f "${src}" ]; then
+              echo "fetch bundle is missing ${name} at exact path ${src}"
+              ls -laR fetch-tmp || true
+              exit 1
+            fi
+            cp "${src}" "${QDIR}/${name}"
+          done
+          echo "fetch bundle received as UNTRUSTED DATA; nothing executed"
+          ls -la "${QDIR}"
+
+      - name: Write the controller scripts
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          mkdir -p "${QDIR}"
+          cat > "${QDIR}/sink.py" <<'SINKEOF'
+          # Loopback-only non-forwarding proxy sink for adapter qualification.
+          # Usage: sink.py LOG_PATH ADDR_PATH [PORT]. Binds 127.0.0.1:PORT
+          # (0 = ephemeral), logs every connection's request line as JSONL,
+          # answers 502 to everything, and never dials upstream. Only the
+          # method and a validated host:port target enter the log; headers
+          # and bodies never do. Bounded: after MAX_ENTRIES the sink keeps
+          # answering 502 but records only a single truncation marker.
+          # Runs as the qsink UID; the qualify UID cannot write its log.
+          import json
+          import socketserver
+          import sys
+          import threading
+          from datetime import datetime, timezone
+          from urllib.parse import urlsplit
+
+          LOG = None
+          LOG_LOCK = threading.Lock()
+          MAX_ENTRIES = 5000
+          COUNT = 0
+          TRUNCATED = False
+
+
+          def log(obj):
+              global COUNT, TRUNCATED
+              entry = {"ts": datetime.now(timezone.utc).isoformat()}
+              entry.update(obj)
+              with LOG_LOCK:
+                  if COUNT >= MAX_ENTRIES:
+                      if not TRUNCATED:
+                          TRUNCATED = True
+                          LOG.write(json.dumps({"ts": entry["ts"], "sink": "log-truncated"}) + "\n")
+                          LOG.flush()
+                      return
+                  COUNT += 1
+                  LOG.write(json.dumps(entry) + "\n")
+                  LOG.flush()
+
+
+          def valid_target(raw):
+              if not raw or "@" in raw or "/" in raw or "?" in raw or "#" in raw:
+                  return ""
+              host, sep, port = raw.rpartition(":")
+              if not sep or not host or not port.isdigit():
+                  return ""
+              num = int(port)
+              if num < 1 or num > 65535 or len(host) > 253:
+                  return ""
+              for ch in host:
+                  if ch.isalnum() or ch in ".-":
+                      continue
+                  if ch in ":[]":
+                      continue
+                  return ""
+              return host.lower() + ":" + str(num)
+
+
+          class Handler(socketserver.StreamRequestHandler):
+              timeout = 10
+
+              def handle(self):
+                  try:
+                      line = self.rfile.readline(4097)
+                  except Exception:
+                      log({"connection": "read-error"})
+                      return
+                  if not line:
+                      log({"connection": "closed-before-request"})
+                      return
+                  if len(line) > 4096 or not line.endswith(b"\n"):
+                      log({"connection": "request-line-too-long"})
+                      self.reply()
+                      return
+                  try:
+                      total = 0
+                      while True:
+                          header = self.rfile.readline(8193)
+                          if not header:
+                              break
+                          total += len(header)
+                          if total > 65536:
+                              break
+                          if header in (b"\r\n", b"\n"):
+                              break
+                  except Exception:
+                      pass
+                  parts = line.decode("latin-1").strip().split()
+                  kind, target = "", ""
+                  if len(parts) >= 2:
+                      method, req_target = parts[0], parts[1]
+                      if method == "CONNECT":
+                          kind, target = "CONNECT", valid_target(req_target)
+                      elif req_target.startswith(("http://", "https://")):
+                          try:
+                              parsed = urlsplit(req_target)
+                              userinfo = parsed.username or parsed.password
+                              host = parsed.hostname or ""
+                              port = parsed.port
+                          except ValueError:
+                              userinfo, host, port = True, "", 0
+                          if not userinfo and host:
+                              if not port:
+                                  if req_target.startswith("https://"):
+                                      port = 443
+                                  else:
+                                      port = 80
+                              kind, target = "absolute-URI", valid_target(host + ":" + str(port))
+                  log({"method": parts[0] if parts else "", "kind": kind, "target": target,
+                       "well_formed": bool(kind and target)})
+                  self.reply()
+
+              def reply(self):
+                  try:
+                      self.wfile.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                      self.wfile.flush()
+                  except Exception:
+                      pass
+
+
+          class Server(socketserver.ThreadingMixIn, socketserver.TCPServer):
+              allow_reuse_address = True
+              daemon_threads = True
+
+
+          def main():
+              log_path, addr_path = sys.argv[1], sys.argv[2]
+              port = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+              global LOG
+              LOG = open(log_path, "w", encoding="utf-8")
+              with Server(("127.0.0.1", port), Handler) as server:
+                  bound = server.server_address[1]
+                  endpoint = "http://127.0.0.1:%d" % bound
+                  with open(addr_path, "w", encoding="utf-8") as handle:
+                      handle.write(endpoint)
+                  log({"sink": "ready", "endpoint": endpoint})
+                  try:
+                      server.serve_forever()
+                  except KeyboardInterrupt:
+                      pass
+
+
+          main()
+          SINKEOF
+          cat > "${QDIR}/run_phase.py" <<'RUNEOF'
+          # Run one phase as a dedicated UID with a deadline, then enforce
+          # the UID process-lifetime boundary. Must run as root (via sudo).
+          # Usage: run_phase.py RESULT_JSON CWD TIMEOUT_S STDOUT STDERR USER -- ENV... -- CMD...
+          # Every process of USER is workload. After the leader exits (or
+          # the deadline passes), root SIGKILLs all USER processes
+          # (pkill -U) and verifies an empty set; inspection errors are
+          # distinguished from an empty set and fail closed. The result
+          # records argv, exit, signals, timeout and UID quiescence, never
+          # the environment, so the synthetic API key never enters a result.
+          import json
+          import os
+          import pwd
+          import signal
+          import subprocess
+          import sys
+          import time
+          from datetime import datetime, timezone
+
+          SWEEP_GRACE_S = 30.0
+
+
+          def utcnow():
+              return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+          def uid_pids(uid):
+              # Returns (pid_list, error). Error is "" on success (even when
+              # empty); non-empty means inspection failed, NOT an empty set.
+              try:
+                  proc = subprocess.run(["pgrep", "-u", str(uid)],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, timeout=10)
+              except FileNotFoundError:
+                  proc = None
+              except (OSError, subprocess.SubprocessError) as exc:
+                  return [], "pgrep failed: %s" % (exc.__class__.__name__,)
+              if proc is not None:
+                  if proc.returncode == 0:
+                      pids = []
+                      for token in proc.stdout.split():
+                          try:
+                              pids.append(int(token))
+                          except ValueError:
+                              return [], "pgrep output unparseable"
+                      return pids, ""
+                  if proc.returncode == 1:
+                      return [], ""
+                  return [], "pgrep error exit %d: %s" % (proc.returncode, proc.stderr.strip()[:200])
+              # Fallback: parse ps when pgrep is absent.
+              try:
+                  proc = subprocess.run(["ps", "-o", "pid=,uid=", "-A"],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, timeout=10)
+              except (OSError, subprocess.SubprocessError) as exc:
+                  return [], "ps failed: %s" % (exc.__class__.__name__,)
+              if proc.returncode != 0:
+                  return [], "ps error exit %d" % (proc.returncode,)
+              pids = []
+              for line in proc.stdout.splitlines():
+                  cols = line.split()
+                  if len(cols) != 2:
+                      continue
+                  try:
+                      pid, puid = int(cols[0]), int(cols[1])
+                  except ValueError:
+                      return [], "ps output unparseable"
+                  if puid == uid:
+                      pids.append(pid)
+              return pids, ""
+
+
+          def sweep_uid(uid,detail):
+              # SIGKILL every process of uid, then verify empty. Returns
+              # (quiet, error, survivors). quiet is True only when the set
+              # is proven empty with no inspection error.
+              try:
+                  kill = subprocess.run(["pkill", "-KILL", "-U", str(uid)],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        text=True, timeout=10)
+                  # pkill: 0 = matched, 1 = no match (already empty).
+                  if kill.returncode not in (0, 1):
+                      # Flag spelling differs across platforms; retry -u.
+                      retry = subprocess.run(["pkill", "-KILL", "-u", str(uid)],
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                             text=True, timeout=10)
+                      if retry.returncode not in (0, 1):
+                          detail.append("pkill error: -U exit %d, -u exit %d" % (kill.returncode, retry.returncode))
+              except FileNotFoundError:
+                  detail.append("pkill absent; falling back to per-pid kill")
+                  pids, err = uid_pids(uid)
+                  if err:
+                      return False, err, -1
+                  for pid in pids:
+                      try:
+                          os.kill(pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      except OSError as exc:
+                          return False, "kill pid %d: %s" % (pid, exc.__class__.__name__), -1
+              except (OSError, subprocess.SubprocessError) as exc:
+                  return False, "pkill failed: %s" % (exc.__class__.__name__,), -1
+              deadline = time.monotonic() + SWEEP_GRACE_S
+              while True:
+                  pids, err = uid_pids(uid)
+                  if err:
+                      return False, err, -1
+                  if not pids:
+                      return True, "", 0
+                  if time.monotonic() >= deadline:
+                      return False, "", len(pids)
+                  time.sleep(0.1)
+
+
+          def main():
+              args = sys.argv[1:]
+              try:
+                  sep1 = args.index("--")
+                  sep2 = args.index("--", sep1 + 1)
+              except ValueError:
+                  raise SystemExit("missing -- separators (need ENV -- CMD)")
+              if sep1 < 6:
+                  raise SystemExit("missing result/cwd/timeout/stdout/stderr/user")
+              result_path, cwd, timeout_s, out_path, err_path, user = args[0], args[1], float(args[2]), args[3], args[4], args[5]
+              env_items = args[6:sep1]
+              cmd = args[sep2 + 1:]
+              if not cmd:
+                  raise SystemExit("missing command")
+              try:
+                  pw = pwd.getpwnam(user)
+              except KeyError:
+                  raise SystemExit("unknown user " + user)
+              uid, gid = pw.pw_uid, pw.pw_gid
+              env = {}
+              for item in env_items:
+                  name, eq, value = item.partition("=")
+                  if not eq or not name:
+                      raise SystemExit("bad env item")
+                  env[name] = value
+              started_wall = utcnow()
+              started = time.monotonic()
+              result = {"argv": cmd, "user": user, "uid": uid, "started_utc": started_wall}
+              timed_out = False
+              code = None
+              try:
+                  with open(out_path, "wb") as out, open(err_path, "wb") as err:
+                      proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                              stdout=out, stderr=err, user=uid, group=gid,
+                                              start_new_session=True)
+                      try:
+                          code = proc.wait(timeout=timeout_s)
+                      except subprocess.TimeoutExpired:
+                          timed_out = True
+                          code = None
+              except OSError as exc:
+                  result.update({"supervisor_error": exc.__class__.__name__,
+                                 "finished_utc": utcnow()})
+                  with open(result_path, "w", encoding="utf-8") as handle:
+                      json.dump(result, handle, indent=2)
+                      handle.write("\n")
+                  return 1
+              # The UID boundary is enforced even when the leader already
+              # exited: detached descendants share the UID, not the group.
+              detail = []
+              quiet, sweep_err, survivors = sweep_uid(uid, detail)
+              # Reap the leader if it survived the sweep window.
+              try:
+                  code = proc.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  code = proc.poll()
+              if code is None or code < 0:
+                  signum = signal.SIGKILL if code is None else -code
+                  result.update({"exit": 128 + signum, "signaled": True, "signal": signum})
+              else:
+                  result.update({"exit": code, "signaled": False, "signal": 0})
+              result.update({
+                  "timed_out": timed_out,
+                  "uid_quiet": quiet,
+                  "uid_error": sweep_err,
+                  "uid_survivors": survivors,
+                  "sweep_detail": detail,
+                  "cleanup_complete": quiet and sweep_err == "",
+                  "duration_s": round(time.monotonic() - started, 3),
+                  "finished_utc": utcnow(),
+              })
+              with open(result_path, "w", encoding="utf-8") as handle:
+                  json.dump(result, handle, indent=2)
+                  handle.write("\n")
+              return 0
+
+
+          sys.exit(main())
+          RUNEOF
+          cat > "${QDIR}/uid_sweep.py" <<'SWEEPEOF'
+          # Root UID sweep used between phases and in finalization.
+          # Usage: uid_sweep.py USER. Prints JSON to stdout; exits 0 only
+          # when the UID set is proven empty with no inspection error.
+          import json
+          import sys
+          sys.path.insert(0, sys.argv[0].rsplit("/", 1)[0])
+          from run_phase import sweep_uid, uid_pids
+          import pwd
+          user = sys.argv[1]
+          try:
+              uid = pwd.getpwnam(user).pw_uid
+          except KeyError:
+              print(json.dumps({"user": user, "quiet": False, "error": "unknown user"}))
+              sys.exit(1)
+          detail = []
+          quiet, err, survivors = sweep_uid(uid, detail)
+          print(json.dumps({"user": user, "uid": uid, "quiet": quiet,
+                            "error": err, "survivors": survivors, "detail": detail}))
+          sys.exit(0 if (quiet and not err) else 1)
+          SWEEPEOF
+          cat > "${QDIR}/verdict.py" <<'VERDICTEOF'
+          # Decide the qualification verdict and write the evidence JSON.
+          # Usage: verdict.py QDIR EVIDENCE_PATH, or verdict.py --self-test.
+          # Exits non-zero when the verdict is fail. Evidence is always
+          # written when this script runs; missing or invalid inputs fail
+          # closed with explicit check records. Runs as root; reads only
+          # root-copied, hashed log bytes.
+          #
+          # Automated eligibility predicate (every check must hold; the
+          # human promotion checks are documented in
+          # docs/harness-verification.md):
+          #  1. inputs: exactly one pinned build request (whole-value
+          #     allowlist; single line; bounded);
+          #  2. fetch: the pinned registry record pins the requested build,
+          #     the downloaded tarball integrity verifies, installed
+          #     name/version/source agree, the npm receipt is present, and
+          #     the fetch bytes hash identically to the protected executable
+          #     (transfer match). Publisher native-manifest status is
+          #     recorded; absence is stated, not verified (F7);
+          #  3. artifact: the protected file is a native container for the
+          #     expected OS/arch (ELF on Linux; 64-bit or universal Mach-O
+          #     on macOS, 32-bit explicitly ineligible), size within the
+          #     256 MiB library limit, and the executed root-owned object
+          #     hashes identically through finalization;
+          #  4. version: exit 0 with the requested version reported,
+          #     self-terminated, UID quiet with no inspection error;
+          #  5. stimulus: self-terminated with a sink-induced error exit
+          #     (nonzero; the non-forwarding 502 sink and the invalid key
+          #     cannot produce a model turn, so exit 0 is rejected as
+          #     unexpected success), no timeout, no signal, UID quiet;
+          #  6. observation: the expected CONNECT appears in the frozen
+          #     stimulus-phase log only (version-phase CONNECTs never
+          #     qualify), after the qualify UID was proven empty before
+          #     that sink was exposed;
+          #  7. freeze: every phase log was hashed after its sink exited,
+          #     and the bytes still hash identically;
+          #  8. confinement: on Linux, calibration rejection increments
+          #     were observed, each measured REJECT delta is individually
+          #     zero with monotonic counters and exact ordered rule
+          #     identities (no wrong-destination/order/duplicate/extra),
+          #     and the UID was quiet after every phase; on macOS, the
+          #     same holds only when pf UID confinement was fully
+          #     established, otherwise the leg is diagnostic/ineligible
+          #     with an exact reason (zero direct attempts withheld).
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from datetime import datetime, timezone
+
+          EXPECTED = {"kind": "CONNECT", "target": "api.anthropic.com:443"}
+          DIGEST_RE = re.compile(r"[0-9a-f]{64}")
+          VERSION_RE = re.compile(r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}")
+          RECIPES = {"claude-code": "claude-exec-v1"}
+          PACKAGES = {"claude-code": "@anthropic-ai/claude-code"}
+          REGISTRY = "https://registry.npmjs.org/"
+          MAX_SIZE = 268435456
+
+
+          def utcnow():
+              return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+          def read_text(path, limit=65536):
+              with open(path, encoding="utf-8", errors="replace") as handle:
+                  data = handle.read(limit + 1)
+              if len(data) > limit:
+                  return data[:limit] + "\n...truncated\n"
+              return data
+
+
+          def read_json(path):
+              with open(path, encoding="utf-8") as handle:
+                  return json.load(handle)
+
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+
+          def chain_rows(path):
+              # Parse an `iptables -L CHAIN -v -n -x` (or ip6tables) dump
+              # into ORDERED per-rule rows with full identities. Columns:
+              # pkts bytes target prot opt in out source destination [opts].
+              rows = []
+              with open(path, encoding="utf-8", errors="replace") as handle:
+                  for line in handle:
+                      cols = line.split()
+                      if len(cols) < 9 or cols[2] not in ("REJECT", "ACCEPT"):
+                          continue
+                      try:
+                          packets = int(cols[0])
+                      except ValueError:
+                          raise ValueError("unparseable packet counter")
+                      if packets < 0:
+                          raise ValueError("negative packet counter")
+                      prot = cols[3]
+                      destination = cols[8] if len(cols) > 8 else ""
+                      dpt = ""
+                      if "dpt:" in line:
+                          dpt = line.split("dpt:", 1)[1].split()[0]
+                      rows.append({"packets": packets, "target": cols[2],
+                                   "prot": prot, "dpt": dpt,
+                                   "destination": destination})
+              return rows
+
+
+          def chain_identity(row):
+              # Full ordered identity: target, protocol, port and
+              # destination. Discarding any of these would admit
+              # wrong-destination or extra-rule substitutions (F3).
+              return (row["target"], row["prot"], row["dpt"], row["destination"])
+
+
+          def expected_v4(port):
+              return [("ACCEPT", "tcp", str(port), "127.0.0.1"),
+                      ("REJECT", "udp", "53", "0.0.0.0/0"),
+                      ("REJECT", "tcp", "53", "0.0.0.0/0"),
+                      ("REJECT", "all", "", "0.0.0.0/0")]
+
+
+          def expected_v6():
+              return [("REJECT", "udp", "53", "::/0"),
+                      ("REJECT", "tcp", "53", "::/0"),
+                      ("REJECT", "all", "", "::/0")]
+
+
+          def validate_chain(path, expected):
+              # Both dumps must contain EXACTLY the expected confinement
+              # chain in order, with no duplicate/extra rules. Returns rows.
+              rows = chain_rows(path)
+              got = [chain_identity(r) for r in rows]
+              if got != expected:
+                  raise ValueError("unexpected chain structure at %s: %r" % (path, got))
+              return rows
+
+
+          def chain_delta(before_path, after_path, expected):
+              # Per-index packet deltas between two dumps with identical
+              # expected structure. Requires nonnegative monotonic counters
+              # (a reset is a refusal, never a negative that cancels a
+              # positive). Returns ordered [(identity, delta)].
+              before = validate_chain(before_path, expected)
+              after = validate_chain(after_path, expected)
+              out = []
+              for b, a in zip(before, after):
+                  delta = a["packets"] - b["packets"]
+                  if delta < 0:
+                      raise ValueError("counter reset between %s and %s" % (before_path, after_path))
+                  out.append((chain_identity(a), delta))
+              return out
+
+
+          def delta_json(ordered):
+              return {" ".join(k): v for k, v in ordered}
+
+
+          def reject_deltas(ordered):
+              return [(k, v) for k, v in ordered if k[0] == "REJECT"]
+
+
+          def self_test():
+              # Inert fixtures: no network, no firewall, no harness.
+              header = ("Chain QUALIFY_EGRESS (1 references)\n"
+                        "pkts bytes target prot opt in out source destination\n")
+              def v4_row(pkts, target, prot, dest, dpt=""):
+                  base = "%4d %4d %-6s %-3s -- * * 0.0.0.0/0 %-10s" % (pkts, pkts * 80, target, prot, dest)
+                  if dpt:
+                      base += " %s dpt:%s" % (prot, dpt)
+                  return base + "\n"
+              P = 18081
+              exp4 = expected_v4(P)
+              cal_before = (header +
+                  v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                  v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                  v4_row(3, "REJECT", "all", "0.0.0.0/0"))
+              # NOTE: calibration uses the port-specific chain; construct
+              # full ordered dumps with the ACCEPT first.
+              cal_before = (header +
+                  v4_row(5, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                  v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                  v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                  v4_row(3, "REJECT", "all", "0.0.0.0/0"))
+              cal_after = (header +
+                  v4_row(6, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                  v4_row(11, "REJECT", "udp", "0.0.0.0/0", "53") +
+                  v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                  v4_row(4, "REJECT", "all", "0.0.0.0/0"))
+              measured_dirty = (header +
+                  v4_row(6, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                  v4_row(11, "REJECT", "udp", "0.0.0.0/0", "53") +
+                  v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                  v4_row(5, "REJECT", "all", "0.0.0.0/0"))
+              import tempfile
+              paths = []
+              def dump(text):
+                  handle = tempfile.NamedTemporaryFile("w", delete=False)
+                  handle.write(text)
+                  handle.close()
+                  paths.append(handle.name)
+                  return handle.name
+              try:
+                  cal = chain_delta(dump(cal_before), dump(cal_after), exp4)
+                  by_key = dict(cal)
+                  assert by_key[("ACCEPT", "tcp", str(P), "127.0.0.1")] == 1, cal
+                  assert by_key[("REJECT", "udp", "53", "0.0.0.0/0")] == 1, cal
+                  assert by_key[("REJECT", "all", "", "0.0.0.0/0")] == 1, cal
+                  # Calibration-only increments must not poison measured
+                  # verdicts: each measured baseline starts fresh.
+                  clean = chain_delta(dump(cal_after), dump(cal_after), exp4)
+                  for k, v in reject_deltas(clean):
+                      assert v == 0, clean
+                  bad = chain_delta(dump(cal_after), dump(measured_dirty), exp4)
+                  assert dict(bad)[("REJECT", "all", "", "0.0.0.0/0")] == 1, bad
+                  # Wrong destination refused (loopback ACCEPT to 0/0).
+                  wrong_dest = (header +
+                      v4_row(5, "ACCEPT", "tcp", "0.0.0.0/0", str(P)) +
+                      v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                      v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                      v4_row(3, "REJECT", "all", "0.0.0.0/0"))
+                  try:
+                      chain_delta(dump(wrong_dest), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: wrong-destination chain accepted")
+                  # Wrong order refused.
+                  wrong_order = (header +
+                      v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                      v4_row(5, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                      v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                      v4_row(3, "REJECT", "all", "0.0.0.0/0"))
+                  try:
+                      chain_delta(dump(wrong_order), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: wrong-order chain accepted")
+                  # Duplicate rule refused.
+                  dup = (header +
+                      v4_row(5, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                      v4_row(5, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                      v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                      v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                      v4_row(3, "REJECT", "all", "0.0.0.0/0"))
+                  try:
+                      chain_delta(dump(dup), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: duplicate-rule chain accepted")
+                  # Extra rule refused.
+                  extra = (header +
+                      v4_row(5, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                      v4_row(10, "REJECT", "udp", "0.0.0.0/0", "53") +
+                      v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                      v4_row(3, "REJECT", "all", "0.0.0.0/0") +
+                      v4_row(0, "ACCEPT", "all", "0.0.0.0/0"))
+                  try:
+                      chain_delta(dump(extra), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: extra-rule chain accepted")
+                  # Counter reset refused (negative delta), never cancels.
+                  reset_after = (header +
+                      v4_row(6, "ACCEPT", "tcp", "127.0.0.1", str(P)) +
+                      v4_row(9, "REJECT", "udp", "0.0.0.0/0", "53") +
+                      v4_row(0, "REJECT", "tcp", "0.0.0.0/0", "53") +
+                      v4_row(5, "REJECT", "all", "0.0.0.0/0"))
+                  try:
+                      chain_delta(dump(cal_after), dump(reset_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: counter reset accepted")
+                  # Summed-zero with a positive REJECT must still fail when
+                  # checked per-rule (negative cancellation is impossible
+                  # because resets already refuse, but per-rule zero is
+                  # still required individually).
+                  try:
+                      chain_delta(dump(header), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: malformed chain accepted")
+                  try:
+                      chain_delta(dump(""), dump(cal_after), exp4)
+                  except ValueError:
+                      pass
+                  else:
+                      raise SystemExit("self-test: empty counters accepted")
+                  # Whole-value version validation.
+                  for value, want in (("2.1.290", True), ("2.1.290\n", False),
+                                      ("git+https://example.invalid/x.git#\n2.1.290", False),
+                                      ("latest", False)):
+                      got = len(value) <= 32 and VERSION_RE.fullmatch(value) is not None
+                      assert got == want, value
+              finally:
+                  for path in paths:
+                      try:
+                          os.unlink(path)
+                      except OSError:
+                          pass
+
+
+          def run_verdict(qdir, out):
+              env = os.environ
+
+              def p(name):
+                  return os.path.join(qdir, name)
+
+              harness = env.get("QUALIFY_HARNESS", "")
+              version = env.get("QUALIFY_VERSION", "")
+              adapter = env.get("QUALIFY_ADAPTER", "")
+              entrypoint = env.get("QUALIFY_ENTRYPOINT", "")
+              goos = env.get("QUALIFY_GOOS", "")
+              goarch = env.get("QUALIFY_GOARCH", "")
+              run_id = env.get("GITHUB_RUN_ID", "")
+              run_attempt = env.get("GITHUB_RUN_ATTEMPT", "")
+              repo = env.get("GITHUB_REPOSITORY", "")
+
+              evidence = {
+                  "schema": "relux-adapter-evidence-v1",
+                  "harness": harness,
+                  "version": version,
+                  "adapter": adapter,
+                  "entrypoint": entrypoint,
+                  "recipe": RECIPES.get(harness, ""),
+                  "os": goos,
+                  "arch": goarch,
+                  "runner_os": env.get("RUNNER_OS", ""),
+                  "runner_arch": env.get("RUNNER_ARCH", ""),
+                  "runner_image": env.get("ImageOS", ""),
+                  "runner_image_version": env.get("ImageVersion", ""),
+                  "run_id": run_id,
+                  "run_attempt": run_attempt,
+                  "run_url": "https://github.com/%s/actions/runs/%s/attempts/%s" % (repo, run_id, run_attempt),
+                  "repository": repo,
+                  "workflow_sha": env.get("GITHUB_SHA", ""),
+                  "timestamp": utcnow(),
+              }
+              checks = {}
+              evidence["checks"] = checks
+
+              def record(name, ok, detail):
+                  checks[name] = {"ok": bool(ok), "detail": detail}
+                  return bool(ok)
+
+              overall = True
+
+              inputs_ok = (harness in RECIPES and adapter == "generic-env-v1"
+                           and entrypoint == "exec" and len(version) <= 32
+                           and VERSION_RE.fullmatch(version) is not None)
+              overall &= record("inputs", inputs_ok,
+                  "exact pinned build request" if inputs_ok else
+                  "inputs are not an exact pinned build request")
+
+              # Phase reachability (F8): explicit step outcomes fed by the
+              # controller; missing means not reached, present-but-false
+              # means failed. Every fallback record retains these.
+              try:
+                  phase_status = read_json(p("phase-status.json"))
+              except (OSError, ValueError):
+                  phase_status = {}
+              evidence["phase_status"] = phase_status
+
+              def phase_ok(name):
+                  st = phase_status.get(name)
+                  return isinstance(st, dict) and st.get("ok") is True
+
+              # Fetch provenance (F7): trusted receipt, not vendor payload.
+              fetch_ok, fetch_detail = True, ""
+              fetch_prov = {}
+              try:
+                  fetch_prov = read_json(p("fetch-provenance.json"))
+                  registry = read_json(p("registry.json"))
+                  reg_version = registry.get("version", "")
+                  dist = registry.get("dist") or {}
+                  reg_tarball, reg_integrity = dist.get("tarball", ""), dist.get("integrity", "")
+                  evidence["registry"] = {"record": REGISTRY, "version": reg_version,
+                                          "tarball": reg_tarball, "integrity": reg_integrity}
+                  evidence["fetch"] = {k: fetch_prov.get(k) for k in
+                      ("registry_integrity", "integrity_verified", "tarball_sha256",
+                       "installed_name", "installed_version", "npm_ls_version",
+                       "receipt_present", "native_manifest_status")}
+                  evidence["fetch"]["native_manifest_detail"] = fetch_prov.get("native_manifest_detail", "")
+                  if reg_version != version or not reg_tarball.startswith(REGISTRY) or not reg_integrity:
+                      fetch_ok = False
+                      fetch_detail = "registry record does not pin the requested version"
+                  elif fetch_prov.get("installed_name") != PACKAGES.get(harness, ""):
+                      fetch_ok = False
+                      fetch_detail = "installed package name mismatch"
+                  elif fetch_prov.get("installed_version") != version:
+                      fetch_ok = False
+                      fetch_detail = "installed package version mismatch"
+                  elif fetch_prov.get("integrity_verified") is not True:
+                      fetch_ok = False
+                      fetch_detail = "tarball integrity was not verified"
+                  elif fetch_prov.get("receipt_present") is not True:
+                      fetch_ok = False
+                      fetch_detail = "missing npm receipt (trusted install record)"
+                  elif fetch_prov.get("npm_ls_version", "unavailable") != version:
+                      fetch_ok = False
+                      fetch_detail = "npm ls observation missing or disagrees (missing observations fail)"
+                  else:
+                      fetch_detail = "registry, tarball integrity, receipt and npm agree on the requested build"
+              except (OSError, ValueError, AttributeError):
+                  fetch_ok = False
+                  fetch_detail = "missing fetch provenance"
+                  evidence["registry"] = {}
+                  evidence["fetch"] = {}
+              overall &= record("fetch", fetch_ok, fetch_detail)
+
+              # Protected artifact identity (F7): root-owned path, hashed
+              # there, transfer-matched, native and size-gated.
+              artifact_ok, artifact_detail = True, ""
+              try:
+                  stage = read_json(p("stage.json"))
+                  digest = stage.get("sha256", "")
+                  fetch_digest = fetch_prov.get("sha256", "")
+                  size = stage.get("size", -1)
+                  magic = stage.get("magic", "")
+                  arch_detail = stage.get("arch_detail", "")
+                  native = stage.get("native_eligible") is True
+                  evidence["binary_sha256"] = digest
+                  evidence["fetch_sha256"] = fetch_digest
+                  evidence["transfer_match"] = (digest == fetch_digest and bool(digest))
+                  evidence["protected_path"] = stage.get("path", "")
+                  evidence["file_size"] = size
+                  evidence["native_magic"] = magic
+                  evidence["native_arch_detail"] = arch_detail
+                  evidence["native_expected"] = goos + "/" + goarch
+                  valid_digest = DIGEST_RE.fullmatch(digest or "") is not None
+                  if not valid_digest:
+                      artifact_ok = False
+                      artifact_detail = "unusable binary digest"
+                  elif not evidence["transfer_match"]:
+                      artifact_ok = False
+                      artifact_detail = "protected executable does not hash identically to the fetch bytes"
+                  elif size < 0 or size > MAX_SIZE:
+                      artifact_ok = False
+                      artifact_detail = "artifact exceeds the 256 MiB library limit or size missing"
+                  elif not native:
+                      artifact_ok = False
+                      artifact_detail = "ineligible artifact: non-native for " + goos + " (" + arch_detail + ")"
+                  else:
+                      artifact_detail = "native protected executable verified for " + goos + "/" + goarch
+              except (OSError, ValueError, AttributeError, TypeError):
+                  artifact_ok = False
+                  artifact_detail = "missing stage record"
+              for key, name, limit in (("node_version", "node.txt", 256),
+                                       ("npm_version", "npm.txt", 256)):
+                  try:
+                      evidence[key] = read_text(p(name), limit).strip()
+                  except OSError:
+                      evidence[key] = ""
+              overall &= record("artifact", artifact_ok, artifact_detail)
+
+              # UID boundary map.
+              try:
+                  uid_map = read_json(p("uid-map.json"))
+                  evidence["uid_boundary"] = uid_map
+              except (OSError, ValueError):
+                  uid_map = {}
+                  evidence["uid_boundary"] = {}
+
+              version_ok, version_detail = True, ""
+              try:
+                  version_run = read_json(p("version.json"))
+                  version_out = read_text(p("version.out"), 4096)
+                  reported = version_out.strip().splitlines()
+                  reported = reported[0] if reported else ""
+                  evidence["version_check"] = {
+                      "spec": PACKAGES.get(harness, "") + "@" + version,
+                      "reported": reported,
+                      "exit": version_run.get("exit"),
+                      "timed_out": version_run.get("timed_out"),
+                      "signaled": version_run.get("signaled"),
+                      "uid_quiet": version_run.get("uid_quiet"),
+                      "uid_error": version_run.get("uid_error", ""),
+                      "cleanup_complete": version_run.get("cleanup_complete"),
+                  }
+                  match = (version_run.get("exit") == 0
+                           and reported.startswith(version + " (Claude Code)"))
+                  evidence["version_check"]["version_match"] = match
+                  supervised = (version_run.get("timed_out") is False
+                                and version_run.get("signaled") is False
+                                and version_run.get("uid_quiet") is True
+                                and version_run.get("uid_error", "") == ""
+                                and version_run.get("cleanup_complete") is True
+                                and "supervisor_error" not in version_run)
+                  if not match:
+                      version_ok = False
+                      version_detail = "installed build does not report the requested version"
+                  elif not supervised:
+                      version_ok = False
+                      version_detail = "version check was not cleanly supervised (timeout/signal/UID survivors/error)"
+                  else:
+                      version_detail = "build reports the requested version; UID quiet"
+              except (OSError, ValueError, AttributeError, TypeError):
+                  version_ok = False
+                  version_detail = "missing version run"
+              overall &= record("version", version_ok, version_detail)
+
+              freeze_ok, freeze_detail = True, ""
+              frozen = {}
+              for phase in ("calibration", "version", "stimulus"):
+                  try:
+                      marker = read_json(p("sink-%s.frozen.json" % phase))
+                      actual = sha256_file(p("sink-%s.jsonl" % phase))
+                      if marker.get("sha256") != actual:
+                          freeze_ok = False
+                          freeze_detail = phase + " log changed after freezing"
+                          break
+                      frozen[phase] = {"sha256": actual, "bytes": marker.get("bytes", 0)}
+                  except OSError:
+                      freeze_ok = False
+                      freeze_detail = phase + " log was not frozen"
+                      break
+              evidence["frozen_logs"] = frozen
+              evidence["sink_log_sha256"] = frozen.get("stimulus", {}).get("sha256", "")
+              if freeze_ok:
+                  freeze_detail = "all phase logs hashed after their sinks exited"
+              overall &= record("freeze", freeze_ok, freeze_detail)
+
+              obs_ok, obs_detail = True, ""
+              try:
+                  seen = set()
+                  observations = []
+                  requests = 0
+                  malformed = 0
+                  with open(p("sink-stimulus.jsonl"), encoding="utf-8") as handle:
+                      for line in handle:
+                          line = line.strip()
+                          if not line:
+                              continue
+                          requests += 1
+                          try:
+                              rec = json.loads(line)
+                          except ValueError:
+                              malformed += 1
+                              continue
+                          if isinstance(rec, dict) and rec.get("well_formed"):
+                              key = (rec.get("kind"), rec.get("target"))
+                              if key not in seen:
+                                  seen.add(key)
+                                  observations.append({"kind": key[0], "target": key[1]})
+                  evidence["observations"] = observations
+                  evidence["sink_requests"] = requests
+                  evidence["sink_malformed_lines"] = malformed
+                  evidence["expected_observation"] = EXPECTED
+                  expected_seen = EXPECTED in observations
+                  evidence["expected_observed"] = expected_seen
+                  if not expected_seen:
+                      obs_ok = False
+                      obs_detail = "no CONNECT to the expected vendor host in the stimulus log"
+                  else:
+                      obs_detail = "attributed CONNECT observed in the stimulus phase (UID was quiet before this sink)"
+              except OSError:
+                  obs_ok = False
+                  obs_detail = "missing stimulus log"
+              try:
+                  audit_seen = False
+                  audit_requests = 0
+                  with open(p("sink-version.jsonl"), encoding="utf-8") as handle:
+                      for line in handle:
+                          line = line.strip()
+                          if not line:
+                              continue
+                          audit_requests += 1
+                          try:
+                              rec = json.loads(line)
+                          except ValueError:
+                              continue
+                          if isinstance(rec, dict) and {"kind": rec.get("kind"), "target": rec.get("target")} == EXPECTED:
+                              audit_seen = True
+                  evidence["version_sink_requests"] = audit_requests
+                  evidence["version_expected_seen_audit_only"] = audit_seen
+              except OSError:
+                  evidence["version_sink_requests"] = 0
+                  evidence["version_expected_seen_audit_only"] = False
+              overall &= record("observation", obs_ok, obs_detail)
+
+              stim_ok, stim_detail = True, ""
+              try:
+                  stimulus = read_json(p("stimulus.json"))
+                  evidence["stimulus"] = {
+                      "argv": stimulus.get("argv", []),
+                      "exit": stimulus.get("exit"),
+                      "signaled": stimulus.get("signaled"),
+                      "signal": stimulus.get("signal"),
+                      "timed_out": stimulus.get("timed_out"),
+                      "uid_quiet": stimulus.get("uid_quiet"),
+                      "uid_error": stimulus.get("uid_error", ""),
+                      "cleanup_complete": stimulus.get("cleanup_complete"),
+                      "duration_s": stimulus.get("duration_s"),
+                      "started_utc": stimulus.get("started_utc"),
+                      "finished_utc": stimulus.get("finished_utc"),
+                  }
+                  if "supervisor_error" in stimulus:
+                      stim_ok = False
+                      stim_detail = "supervisor failure during the stimulus"
+                  elif stimulus.get("timed_out") is not False:
+                      stim_ok = False
+                      stim_detail = "stimulus timed out"
+                  elif stimulus.get("signaled") is not False:
+                      stim_ok = False
+                      stim_detail = "stimulus was signaled"
+                  elif stimulus.get("uid_quiet") is not True or stimulus.get("uid_error", "") != "":
+                      stim_ok = False
+                      stim_detail = "stimulus UID did not quiesce (survivors or inspection error)"
+                  elif stimulus.get("cleanup_complete") is not True:
+                      stim_ok = False
+                      stim_detail = "stimulus UID boundary did not fully terminate"
+                  elif stimulus.get("exit") == 0:
+                      stim_ok = False
+                      stim_detail = "stimulus unexpectedly succeeded against the non-forwarding 502 sink (exit 0 rejected)"
+                  else:
+                      stim_detail = "stimulus self-terminated with sink-induced error exit %r; UID quiet" % (stimulus.get("exit"),)
+              except (OSError, ValueError, AttributeError, TypeError):
+                  stim_ok = False
+                  stim_detail = "missing stimulus run"
+              overall &= record("stimulus", stim_ok, stim_detail)
+
+              evidence["proxy"] = {
+                  "endpoint": env.get("STIMULUS_SINK_ENDPOINT", ""),
+                  "set": ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"],
+                  "no_proxy": "127.0.0.1,::1,localhost",
+              }
+              evidence["auth"] = "synthetic invalid ANTHROPIC_API_KEY (documented in the workflow); no login, no authenticated turn"
+              evidence["stimulus_definition"] = {
+                  "recipe": RECIPES.get(harness, ""),
+                  "argv_tail": ["-p", "Reply with the single word ok."],
+                  "proxy_vars": ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"],
+                  "no_proxy": "127.0.0.1,::1,localhost",
+                  "key": "synthetic invalid value; never leaves the runner (the sink never forwards)",
+                  "config": "fresh qualify-owned HOME and CLAUDE_CONFIG_DIR; no login; updater/telemetry/reporting disabled",
+              }
+              try:
+                  with open(p("calibration.log"), encoding="utf-8") as handle:
+                      calibration = [line.strip() for line in handle if line.strip()]
+              except OSError:
+                  calibration = []
+              evidence["calibration"] = calibration
+              try:
+                  with open(p("sink-port.txt"), encoding="utf-8") as handle:
+                      sink_port = handle.read().strip()
+              except OSError:
+                  sink_port = ""
+              evidence["sink_port"] = sink_port
+
+              confine_ok, confine_detail = True, ""
+              if goos == "linux":
+                  port_ok = sink_port.isdigit() and 1 <= int(sink_port) <= 65535
+                  if not port_ok:
+                      confine_ok = False
+                      confine_detail = "missing sink port"
+                      evidence["measured_counters"] = {}
+                  else:
+                      exp4 = expected_v4(int(sink_port))
+                      exp6 = expected_v6()
+                      if not all(mark in calibration for mark in ("ok loopback", "ok tcp-deny", "ok dns-deny")):
+                          confine_ok = False
+                          confine_detail = "direct-egress calibration incomplete"
+                      else:
+                          try:
+                              cal4 = chain_delta(p("counters4-cal-before.txt"), p("counters4-cal-after.txt"), exp4)
+                              cal6 = chain_delta(p("counters6-cal-before.txt"), p("counters6-cal-after.txt"), exp6)
+                              evidence["calibration_counters"] = {"ipv4": delta_json(cal4), "ipv6": delta_json(cal6)}
+                              by4 = dict(cal4)
+                              if by4.get(("REJECT", "udp", "53", "0.0.0.0/0"), 0) < 1 or by4.get(("REJECT", "all", "", "0.0.0.0/0"), 0) < 1 or by4.get(("ACCEPT", "tcp", sink_port, "127.0.0.1"), 0) < 1:
+                                  confine_ok = False
+                                  confine_detail = "calibration did not prove rejection"
+                          except (OSError, ValueError) as exc:
+                              confine_ok = False
+                              confine_detail = "missing or malformed calibration counters: %s" % (exc.__class__.__name__,)
+                      if confine_ok:
+                          try:
+                              v4 = chain_delta(p("counters4-version-before.txt"), p("counters4-version-after.txt"), exp4)
+                              v6 = chain_delta(p("counters6-version-before.txt"), p("counters6-version-after.txt"), exp6)
+                              s4 = chain_delta(p("counters4-stimulus-before.txt"), p("counters4-stimulus-after.txt"), exp4)
+                              s6 = chain_delta(p("counters6-stimulus-before.txt"), p("counters6-stimulus-after.txt"), exp6)
+                              evidence["measured_counters"] = {
+                                  "version_ipv4": delta_json(v4), "version_ipv6": delta_json(v6),
+                                  "stimulus_ipv4": delta_json(s4), "stimulus_ipv6": delta_json(s6)}
+                              # Each measured REJECT delta must be zero
+                              # INDIVIDUALLY (F3): no summed-zero, no
+                              # negative cancellation (resets already refuse).
+                              for label, ordered in (("version-ipv4", v4), ("version-ipv6", v6),
+                                                     ("stimulus-ipv4", s4), ("stimulus-ipv6", s6)):
+                                  for key, value in reject_deltas(ordered):
+                                      if value != 0:
+                                          confine_ok = False
+                                          confine_detail = "denied direct packet counted during %s (%s = %d)" % (label, " ".join(key), value)
+                                          break
+                                      if not confine_ok:
+                                          break
+                                  if not confine_ok:
+                                      break
+                              if confine_ok:
+                                  evidence["blocked_direct_attempts"] = 0
+                              else:
+                                  evidence["blocked_direct_attempts"] = sum(v for _, o in (("v4", v4), ("v6", v6), ("s4", s4), ("s6", s6)) for _, v in reject_deltas(o))
+                          except (OSError, ValueError):
+                              confine_ok = False
+                              confine_detail = "missing or malformed measured counters"
+                      if confine_ok:
+                          try:
+                              finish = read_json(p("finish-status.json"))
+                              if finish.get("uid_sweep_clean") is not True or finish.get("uid_error", "") != "":
+                                  confine_ok = False
+                                  confine_detail = "qualify-UID processes survived or inspection errored"
+                          except (OSError, ValueError):
+                              confine_ok = False
+                              confine_detail = "missing finish record"
+                      if confine_ok:
+                          # Owner OUTPUT hooks must name the qualify UID.
+                          try:
+                              qid = str(uid_map.get("qualify_uid", ""))
+                              rules_v4 = read_text(p("rules4.txt"), 8192)
+                              rules_v6 = read_text(p("rules6.txt"), 8192)
+                              hook4 = [l for l in rules_v4.splitlines() if "OUTPUT" in l and "QUALIFY_EGRESS" in l and qid in l]
+                              hook6 = [l for l in rules_v6.splitlines() if "OUTPUT" in l and "QUALIFY_EGRESS6" in l and qid in l]
+                              if not qid or len(hook4) != 1 or len(hook6) != 1:
+                                  confine_ok = False
+                                  confine_detail = "owner OUTPUT hooks missing, duplicated or for the wrong UID"
+                          except OSError:
+                              confine_ok = False
+                              confine_detail = "missing firewall rules"
+                      if confine_ok:
+                          confine_detail = "calibrated rejection; zero counted direct packets in each measured interval; UID quiet"
+                      try:
+                          rules_v4 = read_text(p("rules4.txt"), 8192)
+                          rules_v6 = read_text(p("rules6.txt"), 8192)
+                      except OSError:
+                          rules_v4, rules_v6 = "", ""
+                          confine_ok = False
+                          confine_detail = "missing firewall rules"
+                      evidence["enforcement"] = {
+                          "method": "iptables/ip6tables owner match: the workload runs as a dedicated qualify UID whose OUTPUT chains accept only TCP to 127.0.0.1:<sink-port> (IPv4) and reject DNS and all other egress; IPv4 calibration increments are verified before fresh per-phase baselines",
+                          "rules_v4": rules_v4,
+                          "rules_v6": rules_v6,
+                          "limits": "Counters observe packets routed through OUTPUT for the qualify UID only, between per-phase baselines taken after prior-phase UID quiescence. IPv4 denial is increment-calibrated; IPv6 is structurally enforced (chain identity validated) with measured zero increments but without separate IPv6 increment calibration. A loopback relay outside the sink port, a compromised kernel, or traffic before the rules were installed is out of scope. Detached processes are covered by the UID sweep, not by process groups.",
+                      }
+                      if confine_ok:
+                          evidence["direct_egress_claim"] = "measured: zero counted direct packets in each stimulus/version interval under the stated UID enforcement"
+                      else:
+                          evidence["direct_egress_claim"] = "withheld: confinement evidence incomplete"
+              elif goos == "darwin":
+                  try:
+                      mac = read_json(p("macos-confinement.json"))
+                  except (OSError, ValueError):
+                      mac = {}
+                  evidence["macos_confinement"] = mac
+                  if mac.get("diagnostic") is True or mac.get("network_eligible") is not True:
+                      confine_ok = False
+                      confine_detail = "macOS diagnostic/ineligible: " + str(mac.get("reason", "pf UID confinement not established"))
+                  elif not all(mark in calibration for mark in ("ok loopback", "ok tcp-deny", "ok dns-deny")):
+                      confine_ok = False
+                      confine_detail = "direct-egress calibration incomplete"
+                  else:
+                      confine_detail = "pf UID confinement calibrated; zero counted direct packets in each measured interval; UID quiet"
+                      evidence["measured_counters"] = mac.get("measured_counters", {})
+                      evidence["calibration_counters"] = mac.get("calibration_counters", {})
+                      evidence["blocked_direct_attempts"] = mac.get("blocked_direct_attempts", 0)
+                  try:
+                      pf_rules = read_text(p("pf-rules.txt"), 8192)
+                  except OSError:
+                      pf_rules = ""
+                  evidence["enforcement"] = {
+                      "method": "pf user rules: the workload runs as a dedicated qualify UID permitted only to the sink loopback port; all other egress is blocked and counted (or diagnostic when pf guarantees cannot be made)",
+                      "pf_rules": pf_rules,
+                      "limits": "UID process-lifetime and log attribution hold on both legs. Network zero-attempt measurement holds only when pf UID rules and counters are fully established; otherwise the leg is diagnostic/ineligible with an exact reason. A kernel or pf bypass is out of scope.",
+                  }
+                  if confine_ok:
+                      evidence["direct_egress_claim"] = "measured: zero counted direct packets in each stimulus/version interval under pf UID enforcement"
+                  else:
+                      evidence["direct_egress_claim"] = "withheld on macOS: " + confine_detail
+              else:
+                  confine_ok = False
+                  confine_detail = "unsupported platform"
+              overall &= record("confinement", confine_ok, confine_detail)
+
+              expected_marks = {"linux": ("ok loopback", "ok tcp-deny", "ok dns-deny"),
+                                "darwin": ("ok loopback", "ok tcp-deny", "ok dns-deny")}.get(goos, ())
+              evidence["phases"] = {
+                  "fetch": checks["fetch"]["ok"] and checks["artifact"]["ok"],
+                  "calibrate": len(expected_marks) > 0 and all(mark in calibration for mark in expected_marks),
+                  "version": checks["version"]["ok"],
+                  "stimulus": checks["stimulus"]["ok"],
+                  "freeze": checks["freeze"]["ok"],
+              }
+
+              evidence["eligible"] = bool(overall)
+              evidence["verdict"] = "pass" if overall else "fail"
+              if not overall:
+                  failures = [name + ": " + checks[name]["detail"] for name in
+                              ("inputs", "fetch", "artifact", "version", "stimulus", "observation", "freeze", "confinement")
+                              if not checks[name]["ok"]]
+                  evidence["failure_reason"] = failures[0]
+                  evidence["all_failures"] = failures
+              with open(out, "w", encoding="utf-8") as handle:
+                  json.dump(evidence, handle, indent=2)
+                  handle.write("\n")
+              print("verdict: " + evidence["verdict"])
+              if not overall:
+                  print("reason: " + evidence["failure_reason"])
+              return 1 if not overall else 0
+
+
+          def main():
+              if len(sys.argv) == 2 and sys.argv[1] == "--self-test":
+                  self_test()
+                  print("verdict self-test passed")
+                  return 0
+              if len(sys.argv) != 3:
+                  print("usage: verdict.py QDIR EVIDENCE_PATH")
+                  return 2
+              try:
+                  return run_verdict(sys.argv[1], sys.argv[2])
+              except Exception as exc:
+                  env = os.environ
+                  # F8: even the writer-exception fallback retains explicit
+                  # phase statuses; it never omits them.
+                  try:
+                      with open(os.path.join(sys.argv[1], "phase-status.json"), encoding="utf-8") as handle:
+                          phase_status = json.load(handle)
+                  except (OSError, ValueError):
+                      phase_status = {}
+                  evidence = {
+                      "schema": "relux-adapter-evidence-v1",
+                      "harness": env.get("QUALIFY_HARNESS", ""),
+                      "version": env.get("QUALIFY_VERSION", ""),
+                      "adapter": env.get("QUALIFY_ADAPTER", ""),
+                      "entrypoint": env.get("QUALIFY_ENTRYPOINT", ""),
+                      "os": env.get("QUALIFY_GOOS", ""),
+                      "arch": env.get("QUALIFY_GOARCH", ""),
+                      "run_id": env.get("GITHUB_RUN_ID", ""),
+                      "run_attempt": env.get("GITHUB_RUN_ATTEMPT", ""),
+                      "repository": env.get("GITHUB_REPOSITORY", ""),
+                      "workflow_sha": env.get("GITHUB_SHA", ""),
+                      "timestamp": utcnow(),
+                      "eligible": False,
+                      "verdict": "fail",
+                      "failure_reason": "evidence writer error: " + exc.__class__.__name__,
+                      "phase_status": phase_status,
+                      "phases": {"fetch": False, "calibrate": False, "version": False,
+                                 "stimulus": False, "freeze": False},
+                  }
+                  try:
+                      with open(sys.argv[2], "w", encoding="utf-8") as handle:
+                          json.dump(evidence, handle, indent=2)
+                          handle.write("\n")
+                  except OSError:
+                      pass
+                  print("verdict: fail")
+                  print("reason: " + evidence["failure_reason"])
+                  return 1
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          VERDICTEOF
+          echo "verdict.py written"
+          python3 "${QDIR}/verdict.py" --self-test
+          # Controller scripts become root-owned read-only before any
+          # workload UID exists; the workload can neither modify nor
+          # replace the observer.
+          sudo -n chown root:root "${QDIR}/sink.py" "${QDIR}/run_phase.py" "${QDIR}/uid_sweep.py" "${QDIR}/verdict.py"
+          sudo -n chmod 555 "${QDIR}/sink.py" "${QDIR}/run_phase.py" "${QDIR}/uid_sweep.py" "${QDIR}/verdict.py"
+          sudo -n chown root:root "${QDIR}"
+          sudo -n chmod 755 "${QDIR}"
+          # Trusted failure finalizer inputs (F8): explicit phase outcomes,
+          # updated by each step; missing means not reached.
+          echo '{}' | sudo -n tee "${QDIR}/phase-status.json" >/dev/null
+          sudo -n chmod 644 "${QDIR}/phase-status.json"
+          sudo -n python3 - "${QDIR}/phase-status.json" <<'PYEOF'
+          import json, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["controller"] = {"reached": True, "ok": True}
+          with open(path, "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          echo "controller ready"
+
+      - name: Create the fresh workload and sink users
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          # Fresh UIDs are the process-lifetime boundary (F5/F6): every
+          # process of qualify is workload, nothing else runs as qualify,
+          # and qsink owns only the sinks. Both must be absent on a fresh
+          # runner; pre-existing users fail closed (no reuse).
+          if id qualify >/dev/null 2>&1; then
+            echo "user qualify already exists; refusing to reuse a UID boundary"
+            exit 1
+          fi
+          if id qsink >/dev/null 2>&1; then
+            echo "user qsink already exists; refusing to reuse a UID boundary"
+            exit 1
+          fi
+          if [ "${QUALIFY_GOOS}" = "linux" ]; then
+            sudo -n useradd -m -s /bin/false qualify
+            sudo -n useradd -m -s /bin/false qsink
+          else
+            # macOS: allocate two free UIDs >= 502 via dscl.
+            FREE_UID="$(python3 - <<'PYEOF'
+          import subprocess
+          used = set()
+          try:
+              out = subprocess.run(["dscl", ".", "-list", "/Users", "UniqueID"],
+                                   stdout=subprocess.PIPE, text=True, check=True).stdout
+              for line in out.splitlines():
+                  cols = line.split()
+                  if len(cols) == 2:
+                      try:
+                          used.add(int(cols[1]))
+                      except ValueError:
+                          pass
+          except subprocess.SubprocessError:
+              pass
+          avail = [u for u in range(502, 600) if u not in used]
+          print("%d %d" % (avail[0], avail[1]))
+          PYEOF
+          )"
+            QUID="${FREE_UID%% *}"
+            SUID="${FREE_UID##* }"
+            for user in "qualify:${QUID}" "qsink:${SUID}"; do
+              name="${user%%:*}"
+              uid="${user##*:}"
+              sudo -n dscl . -create "/Users/${name}"
+              sudo -n dscl . -create "/Users/${name}" UserShell /usr/bin/false
+              sudo -n dscl . -create "/Users/${name}" RealName "${name} qualify boundary"
+              sudo -n dscl . -create "/Users/${name}" UniqueID "${uid}"
+              sudo -n dscl . -create "/Users/${name}" PrimaryGroupID 20
+              sudo -n dscl . -create "/Users/${name}" NFSHomeDirectory "/var/empty"
+            done
+          fi
+          id qualify
+          id qsink
+          sudo -n python3 - "${QDIR}" <<'PYEOF'
+          import json, pwd
+          import sys
+          qdir = sys.argv[1]
+          qualify = pwd.getpwnam("qualify")
+          qsink = pwd.getpwnam("qsink")
+          if qualify.pw_uid == qsink.pw_uid:
+              raise SystemExit("qualify and qsink share a UID")
+          with open(qdir + "/uid-map.json", "w", encoding="utf-8") as handle:
+              json.dump({"qualify": "qualify", "qualify_uid": qualify.pw_uid,
+                         "qsink": "qsink", "qsink_uid": qsink.pw_uid}, handle, indent=2)
+              handle.write("\n")
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["users"] = {"reached": True, "ok": True}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          print("qualify uid=%d qsink uid=%d" % (qualify.pw_uid, qsink.pw_uid))
+          PYEOF
+          # Fresh UIDs must start with no processes; inspection errors fail
+          # closed (distinguished from an empty set).
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          sudo -n python3 "${QDIR}/uid_sweep.py" qsink
+
+      - name: Stage the executable in a root-owned read-only path
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          STAGE_DIR="/opt/qualify-exec"
+          sudo -n mkdir -p "${STAGE_DIR}"
+          sudo -n chown root:root "${STAGE_DIR}"
+          sudo -n chmod 755 "${STAGE_DIR}"
+          # The fetch bytes are UNTRUSTED DATA until hashed here. Root
+          # copies them into a root-owned read-only object; this is the
+          # exact executable the launcher would hash and the only object
+          # the workload ever executes.
+          sudo -n cp "${QDIR}/harness" "${STAGE_DIR}/harness"
+          sudo -n chown root:root "${STAGE_DIR}/harness"
+          sudo -n chmod 555 "${STAGE_DIR}/harness"
+          echo "HARNESS_PROTECTED=${STAGE_DIR}/harness" >> "${GITHUB_ENV}"
+          sudo -n python3 - "${QDIR}" "${STAGE_DIR}/harness" "${QUALIFY_GOOS}" <<'PYEOF'
+          import hashlib, json, os, sys
+          qdir, protected, goos = sys.argv[1], sys.argv[2], sys.argv[3]
+          def sha256_of(path):
+              digest = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          with open(protected, "rb") as handle:
+              magic = handle.read(4)
+          size = os.path.getsize(protected)
+          if goos == "linux":
+              native = magic == b"\x7fELF"
+              arch_detail = "ELF" if native else "non-ELF magic=" + magic.hex()
+          elif goos == "darwin":
+              if magic in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"):
+                  native, arch_detail = True, "Mach-O 64-bit"
+              elif magic in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+                  native, arch_detail = True, "Mach-O universal"
+              else:
+                  native, arch_detail = False, "non-64-bit-Mach-O magic=" + magic.hex()
+          else:
+              native, arch_detail = False, "unsupported OS"
+          stage = {"path": protected, "sha256": sha256_of(protected),
+                   "size": size, "magic": magic.hex(),
+                   "arch_detail": arch_detail,
+                   "native_eligible": bool(native) and size <= 268435456}
+          with open(qdir + "/stage.json", "w", encoding="utf-8") as handle:
+              json.dump(stage, handle, indent=2)
+              handle.write("\n")
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["stage"] = {"reached": True, "ok": True}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          print(json.dumps(stage, indent=2))
+          PYEOF
+          # The workload UID can read/execute the protected object but can
+          # neither write it nor its ancestor directory.
+          sudo -n -u qualify test -r "${STAGE_DIR}/harness"
+          sudo -n -u qualify test -x "${STAGE_DIR}/harness"
+          if sudo -n -u qualify test -w "${STAGE_DIR}/harness" 2>/dev/null; then
+            echo "protected executable is writable by qualify; refusing"
+            exit 1
+          fi
+          if sudo -n -u qsink test -w "${STAGE_DIR}/harness" 2>/dev/null; then
+            echo "protected executable is writable by qsink; refusing"
+            exit 1
+          fi
+          # Downloaded fetch files become root-owned (they were runner-owned
+          # in a root-owned directory); the workload never writes them.
+          sudo -n chown root:root "${QDIR}/harness" "${QDIR}/fetch-provenance.json" "${QDIR}/registry.json" "${QDIR}/npm-receipt.json"
+          sudo -n chmod 644 "${QDIR}/harness" "${QDIR}/fetch-provenance.json" "${QDIR}/registry.json" "${QDIR}/npm-receipt.json"
+
+      - name: Start the calibration sink and install UID confinement (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          # qsink-only directory: 0700, so qualify cannot list, read or
+          # learn future sink addresses from the filesystem (F6). Root
+          # reads the address and passes only the current endpoint via env.
+          sudo -n mkdir -p "${QDIR}/sinks"
+          sudo -n chown qsink:qsink "${QDIR}/sinks" 2>/dev/null || sudo -n chown qsink "${QDIR}/sinks"
+          sudo -n chmod 700 "${QDIR}/sinks"
+          sudo -n -u qsink python3 "${QDIR}/sink.py" "${QDIR}/sinks/sink-calibration-raw.jsonl" "${QDIR}/sinks/sink-calibration.addr" 0 >"${QDIR}/sinks/sink-calibration.server.log" 2>&1 &
+          echo $! | sudo -n tee "${QDIR}/sinks/sink-calibration.pid" >/dev/null
+          TRIES=0
+          while ! sudo -n test -s "${QDIR}/sinks/sink-calibration.addr" && [ "${TRIES}" -lt 50 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          CAL_SINK_ENDPOINT="$(sudo -n cat "${QDIR}/sinks/sink-calibration.addr")"
+          case "${CAL_SINK_ENDPOINT}" in
+            http://127.0.0.1:[0-9]*) ;;
+            *)
+              echo "sink endpoint is not loopback: ${CAL_SINK_ENDPOINT}"
+              exit 1
+              ;;
+          esac
+          CAL_PORT="${CAL_SINK_ENDPOINT##http://127.0.0.1:}"
+          echo "${CAL_PORT}" | sudo -n tee "${QDIR}/sink-port.txt" >/dev/null
+          echo "CAL_SINK_ENDPOINT=${CAL_SINK_ENDPOINT}" >> "${GITHUB_ENV}"
+          echo "sink port ${CAL_PORT} (reused sequentially for all phases)"
+          # UID confinement keyed by qualify UID (numeric): the qualify UID
+          # may reach ONLY the sink's loopback port. Everything else is
+          # dropped and counted.
+          QUID="$(sudo -n python3 -c 'import pwd; print(pwd.getpwnam("qualify").pw_uid)')"
+          if sudo -n iptables -L QUALIFY_EGRESS -n >/dev/null 2>&1; then
+            echo "QUALIFY_EGRESS chain already exists; refusing"
+            exit 1
+          fi
+          if sudo -n ip6tables -L QUALIFY_EGRESS6 -n >/dev/null 2>&1; then
+            echo "QUALIFY_EGRESS6 chain already exists; refusing"
+            exit 1
+          fi
+          sudo -n iptables -N QUALIFY_EGRESS
+          sudo -n iptables -I OUTPUT 1 -m owner --uid-owner "${QUID}" -j QUALIFY_EGRESS
+          sudo -n iptables -A QUALIFY_EGRESS -p tcp -d 127.0.0.1 --dport "${CAL_PORT}" -j ACCEPT
+          sudo -n iptables -A QUALIFY_EGRESS -p udp --dport 53 -j REJECT
+          sudo -n iptables -A QUALIFY_EGRESS -p tcp --dport 53 -j REJECT
+          sudo -n iptables -A QUALIFY_EGRESS -j REJECT
+          sudo -n ip6tables -N QUALIFY_EGRESS6
+          sudo -n ip6tables -I OUTPUT 1 -m owner --uid-owner "${QUID}" -j QUALIFY_EGRESS6
+          sudo -n ip6tables -A QUALIFY_EGRESS6 -p udp --dport 53 -j REJECT
+          sudo -n ip6tables -A QUALIFY_EGRESS6 -p tcp --dport 53 -j REJECT
+          sudo -n ip6tables -A QUALIFY_EGRESS6 -j REJECT
+          {
+            sudo -n iptables -S OUTPUT
+            sudo -n iptables -S QUALIFY_EGRESS
+          } | sudo -n tee "${QDIR}/rules4.txt" >/dev/null
+          {
+            sudo -n ip6tables -S OUTPUT
+            sudo -n ip6tables -S QUALIFY_EGRESS6
+          } | sudo -n tee "${QDIR}/rules6.txt" >/dev/null
+          sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-cal-before.txt" >/dev/null
+          sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-cal-before.txt" >/dev/null
+          # Calibration probes run as the confined UID through the same
+          # UID-boundary supervisor as the harness. Root owns the probe
+          # files (readable, not writable, by qualify).
+          sudo -n tee "${QDIR}/probe-loopback.py" >/dev/null <<'PYEOF'
+          import socket, sys
+          sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+          sock.close()
+          PYEOF
+          sudo -n tee "${QDIR}/probe-tcp.py" >/dev/null <<'PYEOF'
+          import socket
+          try:
+              socket.create_connection(("192.0.2.1", 443), timeout=5)
+          except OSError:
+              pass
+          else:
+              raise SystemExit("direct egress answered")
+          PYEOF
+          sudo -n tee "${QDIR}/probe-dns.py" >/dev/null <<'PYEOF'
+          import socket
+          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.settimeout(5)
+          sock.connect(("8.8.8.8", 53))
+          try:
+              sock.send(b"\x00\x00")
+              sock.recv(512)
+          except OSError:
+              pass
+          else:
+              raise SystemExit("direct DNS answered")
+          PYEOF
+          sudo -n chmod 555 "${QDIR}/probe-loopback.py" "${QDIR}/probe-tcp.py" "${QDIR}/probe-dns.py"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-loopback.json" /tmp 20 "${QDIR}/cal-loopback.out" "${QDIR}/cal-loopback.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-loopback.py" "${CAL_PORT}"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-tcp.json" /tmp 20 "${QDIR}/cal-tcp.out" "${QDIR}/cal-tcp.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-tcp.py"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-dns.json" /tmp 20 "${QDIR}/cal-dns.out" "${QDIR}/cal-dns.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-dns.py"
+          sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-cal-after.txt" >/dev/null
+          sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-cal-after.txt" >/dev/null
+          sudo -n python3 - "${QDIR}" <<'PYEOF'
+          import json, sys
+          qdir = sys.argv[1]
+          sys.path.insert(0, qdir)
+          from verdict import chain_delta, expected_v4, expected_v6
+          def load(name):
+              with open(qdir + "/" + name, encoding="utf-8") as handle:
+                  return json.load(handle)
+          for name in ("cal-loopback.json", "cal-tcp.json", "cal-dns.json"):
+              res = load(name)
+              if res.get("exit") != 0 or res.get("timed_out") or res.get("signaled") or res.get("uid_quiet") is not True or res.get("uid_error", "") != "" or not res.get("cleanup_complete") or "supervisor_error" in res:
+                  raise SystemExit("calibration probe %s failed: %r" % (name, res))
+          with open(qdir + "/sink-port.txt", encoding="utf-8") as handle:
+              port = handle.read().strip()
+          cal4 = chain_delta(qdir + "/counters4-cal-before.txt", qdir + "/counters4-cal-after.txt", expected_v4(int(port)))
+          by4 = dict(cal4)
+          if by4.get(("REJECT", "udp", "53", "0.0.0.0/0"), 0) < 1:
+              raise SystemExit("DNS calibration did not increment the reject counter: %r" % (by4,))
+          if by4.get(("REJECT", "all", "", "0.0.0.0/0"), 0) < 1:
+              raise SystemExit("TCP calibration did not increment the reject counter: %r" % (by4,))
+          if by4.get(("ACCEPT", "tcp", port, "127.0.0.1"), 0) < 1:
+              raise SystemExit("loopback calibration left no accepted packet: %r" % (by4,))
+          with open(qdir + "/calibration.log", "w", encoding="utf-8") as handle:
+              handle.write("ok loopback\nok tcp-deny\nok dns-deny\n")
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["calibrate"] = {"reached": True, "ok": True}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          print("Linux UID confinement calibrated")
+          PYEOF
+          # Stop the calibration sink and freeze its log from root-copied
+          # bytes (qualify never wrote them). Fresh per-phase baselines
+          # follow after proven UID quiescence, so calibration can never
+          # poison the measured verdict.
+          CAL_SINK_PID="$(sudo -n cat "${QDIR}/sinks/sink-calibration.pid")"
+          sudo -n kill "${CAL_SINK_PID}" || true
+          TRIES=0
+          while sudo -n kill -0 "${CAL_SINK_PID}" 2>/dev/null && [ "${TRIES}" -lt 100 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          if sudo -n kill -0 "${CAL_SINK_PID}" 2>/dev/null; then
+            echo "calibration sink did not stop; its log cannot be frozen"
+            exit 1
+          fi
+          sudo -n python3 - "${QDIR}/sinks/sink-calibration-raw.jsonl" "${QDIR}/sink-calibration.jsonl" "${QDIR}/sink-calibration.frozen.json" <<'PYEOF'
+          import hashlib, json, os, sys
+          raw_path, log_path, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(raw_path, "rb") as handle:
+              data = handle.read()
+          with open(log_path, "wb") as handle:
+              handle.write(data)
+          digest = hashlib.sha256(data).hexdigest()
+          with open(marker, "w", encoding="utf-8") as handle:
+              json.dump({"file": os.path.basename(log_path), "sha256": digest, "bytes": len(data)}, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          # Fresh measured baselines AFTER calibration and quiescence.
+          sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-version-before.txt" >/dev/null
+          sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-version-before.txt" >/dev/null
+
+      - name: Attempt pf UID confinement and calibrate (macOS)
+        if: matrix.goos == 'darwin'
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          sudo -n mkdir -p "${QDIR}/sinks"
+          sudo -n chown qsink "${QDIR}/sinks"
+          sudo -n chmod 700 "${QDIR}/sinks"
+          sudo -n -u qsink python3 "${QDIR}/sink.py" "${QDIR}/sinks/sink-calibration-raw.jsonl" "${QDIR}/sinks/sink-calibration.addr" 0 >"${QDIR}/sinks/sink-calibration.server.log" 2>&1 &
+          echo $! | sudo -n tee "${QDIR}/sinks/sink-calibration.pid" >/dev/null
+          TRIES=0
+          while ! sudo -n test -s "${QDIR}/sinks/sink-calibration.addr" && [ "${TRIES}" -lt 50 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          CAL_SINK_ENDPOINT="$(sudo -n cat "${QDIR}/sinks/sink-calibration.addr")"
+          case "${CAL_SINK_ENDPOINT}" in
+            http://127.0.0.1:[0-9]*) ;;
+            *)
+              echo "sink endpoint is not loopback: ${CAL_SINK_ENDPOINT}"
+              exit 1
+              ;;
+          esac
+          CAL_PORT="${CAL_SINK_ENDPOINT##http://127.0.0.1:}"
+          echo "${CAL_PORT}" | sudo -n tee "${QDIR}/sink-port.txt" >/dev/null
+          echo "CAL_SINK_ENDPOINT=${CAL_SINK_ENDPOINT}" >> "${GITHUB_ENV}"
+          echo "sink port ${CAL_PORT} (reused sequentially for all phases)"
+          # Best-effort pf UID confinement. ANY failure marks the leg
+          # diagnostic and ineligible with an exact reason (brief §2);
+          # UID process-lifetime and log attribution still hold.
+          sudo -n python3 - "${QDIR}" "${CAL_PORT}" <<'PYEOF'
+          import json, pwd, subprocess, sys
+          qdir, port = sys.argv[1], sys.argv[2]
+          quid = pwd.getpwnam("qualify").pw_uid
+          result = {"network_eligible": False, "diagnostic": True, "reason": "",
+                    "measured_counters": {}, "calibration_counters": {},
+                    "blocked_direct_attempts": 0}
+          def record(reason):
+              result["reason"] = reason
+              with open(qdir + "/macos-confinement.json", "w", encoding="utf-8") as handle:
+                  json.dump(result, handle, indent=2)
+                  handle.write("\n")
+              print("macOS diagnostic: " + reason)
+          # pfctl must exist and enable.
+          try:
+              proc = subprocess.run(["pfctl", "-e"], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, timeout=15)
+          except FileNotFoundError:
+              record("pfctl is not available on this runner; pf UID rules cannot be installed")
+              sys.exit(0)
+          except (OSError, subprocess.SubprocessError) as exc:
+              record("pfctl enable inspection failed: %s" % (exc.__class__.__name__,))
+              sys.exit(0)
+          if proc.returncode != 0 and "already enabled" not in (proc.stderr + proc.stdout).lower():
+              record("pfctl -e failed (exit %d): %s" % (proc.returncode, (proc.stderr.strip() or proc.stdout.strip())[:300]))
+              sys.exit(0)
+          # Install anchor rules for the qualify UID only.
+          rules = (
+              'pass out quick proto tcp from any to 127.0.0.1 port %s user %d label "qualify-allow-sink"\n'
+              'block out quick proto udp from any to any port 53 user %d label "qualify-deny-dns"\n'
+              'block out quick proto tcp from any to any port 53 user %d label "qualify-deny-dns-tcp"\n'
+              'block out quick proto { tcp, udp } from any to any user %d label "qualify-deny-egress"\n'
+          ) % (port, quid, quid, quid, quid)
+          try:
+              with open(qdir + "/pf-qualify.conf", "w", encoding="utf-8") as handle:
+                  handle.write(rules)
+          except OSError as exc:
+              record("cannot write pf rules file: %s" % (exc.__class__.__name__,))
+              sys.exit(0)
+          try:
+              proc = subprocess.run(["pfctl", "-a", "qualify", "-f", qdir + "/pf-qualify.conf"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+          except (OSError, subprocess.SubprocessError) as exc:
+              record("pfctl load inspection failed: %s" % (exc.__class__.__name__,))
+              sys.exit(0)
+          if proc.returncode != 0:
+              record("pfctl anchor load failed (exit %d): %s" % (proc.returncode, proc.stderr.strip()[:300]))
+              sys.exit(0)
+          try:
+              proc = subprocess.run(["pfctl", "-a", "qualify", "-s", "rules"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+          except (OSError, subprocess.SubprocessError) as exc:
+              record("pfctl rules inspection failed: %s" % (exc.__class__.__name__,))
+              sys.exit(0)
+          with open(qdir + "/pf-rules.txt", "w", encoding="utf-8") as handle:
+              handle.write(proc.stdout)
+          if "qualify-allow-sink" not in proc.stdout or "qualify-deny-egress" not in proc.stdout:
+              record("pf anchor rules are not present after load; confinement not established")
+              sys.exit(0)
+          # Verbose counters must be available for measurement.
+          try:
+              proc = subprocess.run(["pfctl", "-a", "qualify", "-v", "-s", "rules"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
+          except (OSError, subprocess.SubprocessError) as exc:
+              record("pfctl counter inspection failed: %s" % (exc.__class__.__name__,))
+              sys.exit(0)
+          with open(qdir + "/pf-counters-before.txt", "w", encoding="utf-8") as handle:
+              handle.write(proc.stdout)
+          if "qualify-allow-sink" not in proc.stdout:
+              record("pf verbose counters do not expose the qualify anchor labels; attempts cannot be counted")
+              sys.exit(0)
+          result["network_eligible"] = False
+          result["diagnostic"] = True
+          result["reason"] = "pf UID rules installed but packet-count semantics are not validated on this runner image; leg diagnostic pending counter validation"
+          with open(qdir + "/macos-confinement.json", "w", encoding="utf-8") as handle:
+              json.dump(result, handle, indent=2)
+              handle.write("\n")
+          print("macOS pf rules installed; counters captured but leg remains diagnostic pending validation")
+          PYEOF
+          # Calibration probes still run as qualify through the UID
+          # supervisor to prove loopback reachability and remote denial
+          # behaviorally, even when the leg is diagnostic.
+          sudo -n tee "${QDIR}/probe-loopback.py" >/dev/null <<'PYEOF'
+          import socket, sys
+          sock = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+          sock.close()
+          PYEOF
+          sudo -n tee "${QDIR}/probe-tcp.py" >/dev/null <<'PYEOF'
+          import socket
+          try:
+              socket.create_connection(("192.0.2.1", 443), timeout=5)
+          except OSError:
+              pass
+          else:
+              raise SystemExit("direct egress answered")
+          PYEOF
+          sudo -n tee "${QDIR}/probe-dns.py" >/dev/null <<'PYEOF'
+          import socket
+          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.settimeout(5)
+          sock.connect(("8.8.8.8", 53))
+          try:
+              sock.send(b"\x00\x00")
+              sock.recv(512)
+          except OSError:
+              pass
+          else:
+              raise SystemExit("direct DNS answered")
+          PYEOF
+          sudo -n chmod 555 "${QDIR}/probe-loopback.py" "${QDIR}/probe-tcp.py" "${QDIR}/probe-dns.py"
+          CAL_PORT="$(sudo -n cat "${QDIR}/sink-port.txt")"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-loopback.json" /tmp 20 "${QDIR}/cal-loopback.out" "${QDIR}/cal-loopback.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-loopback.py" "${CAL_PORT}" || echo "loopback probe failed (diagnostic leg records it)"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-tcp.json" /tmp 20 "${QDIR}/cal-tcp.out" "${QDIR}/cal-tcp.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-tcp.py" || echo "tcp probe failed (diagnostic leg records it)"
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/cal-dns.json" /tmp 20 "${QDIR}/cal-dns.out" "${QDIR}/cal-dns.err" qualify -- "PATH=/usr/bin:/bin" -- /usr/bin/python3 "${QDIR}/probe-dns.py" || echo "dns probe failed (diagnostic leg records it)"
+          sudo -n python3 - "${QDIR}" <<'PYEOF'
+          import json, sys
+          qdir = sys.argv[1]
+          def load(name):
+              try:
+                  with open(qdir + "/" + name, encoding="utf-8") as handle:
+                      return json.load(handle)
+              except (OSError, ValueError):
+                  return {}
+          marks = []
+          loop = load("cal-loopback.json")
+          if loop.get("exit") == 0 and loop.get("uid_quiet") is True and not loop.get("timed_out") and not loop.get("signaled"):
+              marks.append("ok loopback")
+          tcp = load("cal-tcp.json")
+          if tcp.get("exit") == 0 and tcp.get("uid_quiet") is True:
+              marks.append("ok tcp-deny")
+          dns = load("cal-dns.json")
+          if dns.get("exit") == 0 and dns.get("uid_quiet") is True:
+              marks.append("ok dns-deny")
+          with open(qdir + "/calibration.log", "w", encoding="utf-8") as handle:
+              for mark in marks:
+                  handle.write(mark + "\n")
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["calibrate"] = {"reached": True, "ok": len(marks) == 3}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          print("macOS calibration marks: %r (leg diagnostic regardless)" % (marks,))
+          PYEOF
+          CAL_SINK_PID="$(sudo -n cat "${QDIR}/sinks/sink-calibration.pid")"
+          sudo -n kill "${CAL_SINK_PID}" || true
+          TRIES=0
+          while sudo -n kill -0 "${CAL_SINK_PID}" 2>/dev/null && [ "${TRIES}" -lt 100 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          if sudo -n kill -0 "${CAL_SINK_PID}" 2>/dev/null; then
+            echo "calibration sink did not stop; its log cannot be frozen"
+            exit 1
+          fi
+          sudo -n python3 - "${QDIR}/sinks/sink-calibration-raw.jsonl" "${QDIR}/sink-calibration.jsonl" "${QDIR}/sink-calibration.frozen.json" <<'PYEOF'
+          import hashlib, json, os, sys
+          raw_path, log_path, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(raw_path, "rb") as handle:
+              data = handle.read()
+          with open(log_path, "wb") as handle:
+              handle.write(data)
+          digest = hashlib.sha256(data).hexdigest()
+          with open(marker, "w", encoding="utf-8") as handle:
+              json.dump({"file": os.path.basename(log_path), "sha256": digest, "bytes": len(data)}, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          # pf counters after calibration (best effort; diagnostic leg).
+          sudo -n pfctl -a qualify -v -s rules | sudo -n tee "${QDIR}/pf-counters-after.txt" >/dev/null || echo "pf counter capture failed"
+
+      - name: Run the version check (UID-bound)
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          SINK_PORT="$(sudo -n cat "${QDIR}/sink-port.txt")"
+          case "${SINK_PORT}" in
+            ''|*[!0-9]*) echo "invalid sink port"; exit 1 ;;
+          esac
+          # The qualify UID was proven empty before this sink was exposed
+          # (sweep at the end of calibration); attribution starts here.
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          sudo -n -u qsink python3 "${QDIR}/sink.py" "${QDIR}/sinks/sink-version-raw.jsonl" "${QDIR}/sinks/sink-version.addr" "${SINK_PORT}" >"${QDIR}/sinks/sink-version.server.log" 2>&1 &
+          echo $! | sudo -n tee "${QDIR}/sinks/sink-version.pid" >/dev/null
+          TRIES=0
+          while ! sudo -n test -s "${QDIR}/sinks/sink-version.addr" && [ "${TRIES}" -lt 50 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          VERSION_SINK_ENDPOINT="$(sudo -n cat "${QDIR}/sinks/sink-version.addr")"
+          if [ "${VERSION_SINK_ENDPOINT}" != "http://127.0.0.1:${SINK_PORT}" ]; then
+            echo "version sink bound an unexpected endpoint: ${VERSION_SINK_ENDPOINT}"
+            exit 1
+          fi
+          echo "VERSION_SINK_ENDPOINT=${VERSION_SINK_ENDPOINT}" >> "${GITHUB_ENV}"
+          echo "version sink at ${VERSION_SINK_ENDPOINT}"
+          WORKDIR="$(sudo -n -u qualify mktemp -d /tmp/qualify-work-XXXXXXXX)"
+          HOMEDIR="$(sudo -n -u qualify mktemp -d /tmp/qualify-home-XXXXXXXX)"
+          CONFDIR="$(sudo -n -u qualify mktemp -d /tmp/qualify-claude-XXXXXXXX)"
+          echo "QUALIFY_WORKDIR=${WORKDIR}" >> "${GITHUB_ENV}"
+          echo "QUALIFY_HOMEDIR=${HOMEDIR}" >> "${GITHUB_ENV}"
+          echo "QUALIFY_CONFDIR=${CONFDIR}" >> "${GITHUB_ENV}"
+          # The six proxy variables point at the sink; the API key is a
+          # documented synthetic invalid value the sink never forwards.
+          ENV_ARGS=(
+            "PATH=/usr/bin:/bin"
+            "HOME=${HOMEDIR}"
+            "CLAUDE_CONFIG_DIR=${CONFDIR}"
+            "ANTHROPIC_API_KEY=[REDACTED]"
+            "HTTP_PROXY=${VERSION_SINK_ENDPOINT}"
+            "HTTPS_PROXY=${VERSION_SINK_ENDPOINT}"
+            "http_proxy=${VERSION_SINK_ENDPOINT}"
+            "https_proxy=${VERSION_SINK_ENDPOINT}"
+            "NO_PROXY=127.0.0.1,::1,localhost"
+            "no_proxy=127.0.0.1,::1,localhost"
+            "DISABLE_AUTOUPDATER=1"
+            "DISABLE_TELEMETRY=1"
+            "DISABLE_ERROR_REPORTING=1"
+            "LANG=en_US.UTF-8"
+            "TERM=dumb"
+          )
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/version.json" "${WORKDIR}" 30 "${QDIR}/version.out" "${QDIR}/version.err" qualify -- "${ENV_ARGS[@]}" -- "${HARNESS_PROTECTED}" --version
+          sudo -n python3 - "${QDIR}" "${QUALIFY_VERSION}" <<'PYEOF'
+          import json, sys
+          qdir, want = sys.argv[1], sys.argv[2]
+          with open(qdir + "/version.json", encoding="utf-8") as handle:
+              res = json.load(handle)
+          ok = (res.get("timed_out") is False and res.get("signaled") is False
+                and res.get("uid_quiet") is True and res.get("uid_error", "") == ""
+                and res.get("cleanup_complete") is True and "supervisor_error" not in res)
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["version"] = {"reached": True, "ok": bool(ok)}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          # Output match is the verdict's decision; supervision failure
+          # fails this step so the log is still frozen below via always().
+          if not ok:
+              raise SystemExit("version supervision failed: %r" % (res,))
+          print("version phase supervised; UID quiet")
+          PYEOF
+          SINK_PID="$(sudo -n cat "${QDIR}/sinks/sink-version.pid")"
+          sudo -n kill "${SINK_PID}" || true
+          TRIES=0
+          while sudo -n kill -0 "${SINK_PID}" 2>/dev/null && [ "${TRIES}" -lt 100 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          if sudo -n kill -0 "${SINK_PID}" 2>/dev/null; then
+            echo "version sink did not stop; its log cannot be frozen"
+            exit 1
+          fi
+          sudo -n python3 - "${QDIR}/sinks/sink-version-raw.jsonl" "${QDIR}/sink-version.jsonl" "${QDIR}/sink-version.frozen.json" <<'PYEOF'
+          import hashlib, json, os, sys
+          raw_path, log_path, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(raw_path, "rb") as handle:
+              data = handle.read()
+          with open(log_path, "wb") as handle:
+              handle.write(data)
+          digest = hashlib.sha256(data).hexdigest()
+          with open(marker, "w", encoding="utf-8") as handle:
+              json.dump({"file": os.path.basename(log_path), "sha256": digest, "bytes": len(data)}, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          # Prove quiescence BEFORE exposing the stimulus sink (F6).
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          if [ "${QUALIFY_GOOS}" = "linux" ]; then
+            sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-version-after.txt" >/dev/null
+            sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-version-after.txt" >/dev/null
+            sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-stimulus-before.txt" >/dev/null
+            sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-stimulus-before.txt" >/dev/null
+          else
+            sudo -n pfctl -a qualify -v -s rules | sudo -n tee "${QDIR}/pf-counters-version-after.txt" >/dev/null || true
+          fi
+
+      - name: Run the stimulus (UID-bound)
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          SINK_PORT="$(sudo -n cat "${QDIR}/sink-port.txt")"
+          # Attribution: the UID was proven empty after the version phase;
+          # nothing else runs as qualify, so every CONNECT below is the
+          # stimulus workload's.
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          sudo -n -u qsink python3 "${QDIR}/sink.py" "${QDIR}/sinks/sink-stimulus-raw.jsonl" "${QDIR}/sinks/sink-stimulus.addr" "${SINK_PORT}" >"${QDIR}/sinks/sink-stimulus.server.log" 2>&1 &
+          echo $! | sudo -n tee "${QDIR}/sinks/sink-stimulus.pid" >/dev/null
+          TRIES=0
+          while ! sudo -n test -s "${QDIR}/sinks/sink-stimulus.addr" && [ "${TRIES}" -lt 50 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          STIMULUS_SINK_ENDPOINT="$(sudo -n cat "${QDIR}/sinks/sink-stimulus.addr")"
+          if [ "${STIMULUS_SINK_ENDPOINT}" != "http://127.0.0.1:${SINK_PORT}" ]; then
+            echo "stimulus sink bound an unexpected endpoint: ${STIMULUS_SINK_ENDPOINT}"
+            exit 1
+          fi
+          echo "STIMULUS_SINK_ENDPOINT=${STIMULUS_SINK_ENDPOINT}" >> "${GITHUB_ENV}"
+          echo "stimulus sink at ${STIMULUS_SINK_ENDPOINT}"
+          ENV_ARGS=(
+            "PATH=/usr/bin:/bin"
+            "HOME=${QUALIFY_HOMEDIR}"
+            "CLAUDE_CONFIG_DIR=${QUALIFY_CONFDIR}"
+            "ANTHROPIC_API_KEY=[REDACTED]"
+            "HTTP_PROXY=${STIMULUS_SINK_ENDPOINT}"
+            "HTTPS_PROXY=${STIMULUS_SINK_ENDPOINT}"
+            "http_proxy=${STIMULUS_SINK_ENDPOINT}"
+            "https_proxy=${STIMULUS_SINK_ENDPOINT}"
+            "NO_PROXY=127.0.0.1,::1,localhost"
+            "no_proxy=127.0.0.1,::1,localhost"
+            "DISABLE_AUTOUPDATER=1"
+            "DISABLE_TELEMETRY=1"
+            "DISABLE_ERROR_REPORTING=1"
+            "LANG=en_US.UTF-8"
+            "TERM=dumb"
+          )
+          sudo -n python3 "${QDIR}/run_phase.py" "${QDIR}/stimulus.json" "${QUALIFY_WORKDIR}" 90 "${QDIR}/stimulus.out" "${QDIR}/stimulus.err" qualify -- "${ENV_ARGS[@]}" -- "${HARNESS_PROTECTED}" -p "Reply with the single word ok."
+          sudo -n python3 - "${QDIR}" <<'PYEOF'
+          import json, sys
+          qdir = sys.argv[1]
+          with open(qdir + "/stimulus.json", encoding="utf-8") as handle:
+              res = json.load(handle)
+          ok = (res.get("timed_out") is False and res.get("signaled") is False
+                and res.get("uid_quiet") is True and res.get("uid_error", "") == ""
+                and res.get("cleanup_complete") is True and "supervisor_error" not in res)
+          with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+              status = json.load(handle)
+          status["stimulus"] = {"reached": True, "ok": bool(ok)}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          if not ok:
+              raise SystemExit("stimulus supervision failed: %r" % (res,))
+          print("stimulus supervised; UID quiet; the verdict judges exit and observation")
+          PYEOF
+          SINK_PID="$(sudo -n cat "${QDIR}/sinks/sink-stimulus.pid")"
+          sudo -n kill "${SINK_PID}" || true
+          TRIES=0
+          while sudo -n kill -0 "${SINK_PID}" 2>/dev/null && [ "${TRIES}" -lt 100 ]; do
+            sleep 0.1
+            TRIES=$((TRIES + 1))
+          done
+          if sudo -n kill -0 "${SINK_PID}" 2>/dev/null; then
+            echo "stimulus sink did not stop; its log cannot be frozen"
+            exit 1
+          fi
+          sudo -n python3 - "${QDIR}/sinks/sink-stimulus-raw.jsonl" "${QDIR}/sink-stimulus.jsonl" "${QDIR}/sink-stimulus.frozen.json" <<'PYEOF'
+          import hashlib, json, os, sys
+          raw_path, log_path, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(raw_path, "rb") as handle:
+              data = handle.read()
+          with open(log_path, "wb") as handle:
+              handle.write(data)
+          digest = hashlib.sha256(data).hexdigest()
+          with open(marker, "w", encoding="utf-8") as handle:
+              json.dump({"file": os.path.basename(log_path), "sha256": digest, "bytes": len(data)}, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify
+          if [ "${QUALIFY_GOOS}" = "linux" ]; then
+            sudo -n iptables -L QUALIFY_EGRESS -v -n -x | sudo -n tee "${QDIR}/counters4-stimulus-after.txt" >/dev/null
+            sudo -n ip6tables -L QUALIFY_EGRESS6 -v -n -x | sudo -n tee "${QDIR}/counters6-stimulus-after.txt" >/dev/null
+          else
+            sudo -n pfctl -a qualify -v -s rules | sudo -n tee "${QDIR}/pf-counters-stimulus-after.txt" >/dev/null || true
+          fi
+
+      - name: Finish the measured run
+        if: always()
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          sudo -n mkdir -p "${QDIR}"
+          # Stop any sinks still running (a failed phase may have left its
+          # sink up); freezing happened per phase on success only, so an
+          # unfrozen log correctly fails the verdict.
+          if sudo -n test -d "${QDIR}/sinks"; then
+            for pidfile in "${QDIR}"/sinks/sink-*.pid; do
+              [ -f "${pidfile}" ] || continue
+              pid="$(sudo -n cat "${pidfile}" 2>/dev/null || true)"
+              [ -n "${pid}" ] || continue
+              sudo -n kill "${pid}" 2>/dev/null || true
+            done
+            sleep 1
+            for pidfile in "${QDIR}"/sinks/sink-*.pid; do
+              [ -f "${pidfile}" ] || continue
+              pid="$(sudo -n cat "${pidfile}" 2>/dev/null || true)"
+              [ -n "${pid}" ] || continue
+              if sudo -n kill -0 "${pid}" 2>/dev/null; then
+                sudo -n kill -9 "${pid}" 2>/dev/null || true
+              fi
+            done
+          fi
+          # Final UID sweep with error distinction; confinement stays until
+          # this verification (removal is a later step, after evidence).
+          SWEEP_JSON="$(sudo -n python3 "${QDIR}/uid_sweep.py" qualify 2>/dev/null || echo '{"quiet":false,"error":"sweep failed"}')"
+          echo "${SWEEP_JSON}"
+          sudo -n python3 - "${QDIR}" "${SWEEP_JSON}" <<'PYEOF'
+          import json, sys
+          qdir, sweep_raw = sys.argv[1], sys.argv[2]
+          try:
+              sweep = json.loads(sweep_raw)
+          except ValueError:
+              sweep = {"quiet": False, "error": "sweep output unparseable"}
+          try:
+              with open(qdir + "/stimulus.json", encoding="utf-8") as handle:
+                  stimulus = json.load(handle)
+              reaped = stimulus.get("cleanup_complete") is True
+          except (OSError, ValueError):
+              reaped = False
+          with open(qdir + "/finish-status.json", "w", encoding="utf-8") as handle:
+              json.dump({"uid_sweep_clean": sweep.get("quiet") is True,
+                         "uid_error": sweep.get("error", ""),
+                         "uid_survivors": sweep.get("survivors", -1),
+                         "tree_reaped": reaped}, handle, indent=2)
+              handle.write("\n")
+          try:
+              with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+                  status = json.load(handle)
+          except (OSError, ValueError):
+              status = {}
+          status["finish"] = {"reached": True, "ok": sweep.get("quiet") is True and sweep.get("error", "") == ""}
+          with open(qdir + "/phase-status.json", "w", encoding="utf-8") as handle:
+              json.dump(status, handle, indent=2)
+              handle.write("\n")
+          PYEOF
+          echo "measured run finished"
+
+      - name: Write evidence and verdict
+        if: always()
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          sudo -n mkdir -p "${QDIR}"
+          # Evidence finalization is independent of diagnostic collection
+          # (a later step): diagnostic failure can never prevent this
+          # writer from running (F8/R1).
+          if sudo -n test -f "${QDIR}/verdict.py"; then
+            sudo -n python3 "${QDIR}/verdict.py" "${QDIR}" "${QDIR}/evidence.json"
+          else
+            sudo -n python3 - "${QDIR}" <<'PYEOF'
+          import json, os
+          from datetime import datetime, timezone
+          import sys
+          qdir = sys.argv[1]
+          env = os.environ
+          try:
+              with open(qdir + "/phase-status.json", encoding="utf-8") as handle:
+                  phase_status = json.load(handle)
+          except (OSError, ValueError):
+              phase_status = {}
+          evidence = {
+              "schema": "relux-adapter-evidence-v1",
+              "harness": env.get("QUALIFY_HARNESS", ""),
+              "version": env.get("QUALIFY_VERSION", ""),
+              "adapter": env.get("QUALIFY_ADAPTER", ""),
+              "entrypoint": env.get("QUALIFY_ENTRYPOINT", ""),
+              "os": env.get("QUALIFY_GOOS", ""),
+              "arch": env.get("QUALIFY_GOARCH", ""),
+              "run_id": env.get("GITHUB_RUN_ID", ""),
+              "run_attempt": env.get("GITHUB_RUN_ATTEMPT", ""),
+              "repository": env.get("GITHUB_REPOSITORY", ""),
+              "workflow_sha": env.get("GITHUB_SHA", ""),
+              "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "eligible": False,
+              "verdict": "fail",
+              "failure_reason": "setup failed before the evidence writer was installed",
+              "phase_status": phase_status,
+              "phases": {"fetch": False, "calibrate": False, "version": False,
+                         "stimulus": False, "freeze": False},
+          }
+          with open(qdir + "/evidence.json", "w", encoding="utf-8") as handle:
+              json.dump(evidence, handle, indent=2)
+              handle.write("\n")
+          print("verdict: fail")
+          print("reason: " + evidence["failure_reason"])
+          PYEOF
+            exit 1
+          fi
+
+      - name: Export diagnostics only (never truncate protected files)
+        if: always()
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          rm -rf diag
+          mkdir -p diag
+          # R1: an explicit diagnostics-only export directory. Only
+          # designated diagnostic output files are copied, bounded, into
+          # diag/. The staged executable (/opt/qualify-exec/harness), the
+          # fetch bytes, supervisor code, qsink raw logs, frozen logs and
+          # markers, and all finalized evidence are NEVER opened for
+          # writing and NEVER truncated; originals are read-only.
+          sudo -n python3 - "${QDIR}" "diag" <<'PYEOF'
+          import os, sys
+          qdir, diag = sys.argv[1], sys.argv[2]
+          # Allowlist of designated diagnostic files (relative to qdir or
+          # qdir/sinks). Anything else is never copied.
+          ALLOW = [
+              "version.out", "version.err", "stimulus.out", "stimulus.err",
+              "cal-loopback.out", "cal-loopback.err", "cal-tcp.out", "cal-tcp.err",
+              "cal-dns.out", "cal-dns.err", "cal-loopback.json", "cal-tcp.json",
+              "cal-dns.json", "version.json", "stimulus.json",
+              "calibration.log", "phase-status.json", "finish-status.json",
+              "uid-map.json",
+              "sinks/sink-calibration.server.log", "sinks/sink-version.server.log",
+              "sinks/sink-stimulus.server.log",
+          ]
+          LIMIT = 1024 * 1024
+          exported, missing = [], []
+          for name in ALLOW:
+              src = os.path.join(qdir, name)
+              dst = os.path.join(diag, name.replace("/", "_"))
+              try:
+                  size = os.path.getsize(src)
+              except OSError:
+                  missing.append(name)
+                  continue
+              with open(src, "rb") as handle:
+                  if size <= LIMIT:
+                      data = handle.read()
+                  else:
+                      head = handle.read(524288)
+                      handle.seek(max(0, size - 524288))
+                      tail = handle.read(524288)
+                      data = head + b"\n...truncated to bound diagnostics...\n" + tail
+              with open(dst, "wb") as handle:
+                  handle.write(data)
+              exported.append(name)
+          with open(os.path.join(diag, "export-manifest.json"), "w", encoding="utf-8") as handle:
+              import json
+              json.dump({"exported": exported, "missing": missing}, handle, indent=2)
+              handle.write("\n")
+          print("diagnostics exported: %d files, %d missing" % (len(exported), len(missing)))
+          PYEOF
+          sudo -n chown -R "$(id -u):$(id -g)" diag
+          ls -la diag
+
+      - name: Assemble the controlled bundle root
+        if: always()
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          rm -rf bundle
+          mkdir -p bundle
+          # R2: one controlled bundle root with exact, documented relative
+          # names (see the workflow header). QDIR files are root-owned
+          # 0644 (world-readable), so the runner user copies without sudo.
+          # evidence.json is required; other files copy when present (their
+          # absence is already recorded as failure/not-reached in evidence).
+          if [ ! -f "${QDIR}/evidence.json" ]; then
+            echo "evidence.json is missing; finalization failed"
+            exit 1
+          fi
+          cp "${QDIR}/evidence.json" bundle/evidence.json
+          for name in sink-calibration.jsonl sink-version.jsonl sink-stimulus.jsonl \
+              fetch-provenance.json registry.json npm-receipt.json calibration.log \
+              version.json stimulus.json finish-status.json phase-status.json \
+              rules4.txt rules6.txt sink-port.txt uid-map.json stage.json \
+              counters4-cal-before.txt counters4-cal-after.txt \
+              counters6-cal-before.txt counters6-cal-after.txt \
+              counters4-version-before.txt counters4-version-after.txt \
+              counters6-version-before.txt counters6-version-after.txt \
+              counters4-stimulus-before.txt counters4-stimulus-after.txt \
+              counters6-stimulus-before.txt counters6-stimulus-after.txt \
+              pf-rules.txt pf-counters-before.txt pf-counters-after.txt \
+              pf-counters-version-after.txt pf-counters-stimulus-after.txt \
+              macos-confinement.json; do
+            if [ -f "${QDIR}/${name}" ]; then
+              cp "${QDIR}/${name}" "bundle/${name}"
+            fi
+          done
+          ls -la bundle
+          echo "bundle assembled"
+
+      - name: Upload evidence bundle
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: evidence-${{ matrix.goos }}-${{ matrix.goarch }}-attempt-${{ github.run_attempt }}
+          path: bundle/*
+          if-no-files-found: error
+
+      - name: Upload diagnostics bundle
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: diagnostics-${{ matrix.goos }}-${{ matrix.goarch }}-attempt-${{ github.run_attempt }}
+          path: diag/*
+          if-no-files-found: warn
+
+      - name: Remove confinement (Linux)
+        if: ${{ always() && matrix.goos == 'linux' }}
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          # Never lift confinement with workload processes alive: sweep
+          # first and verify quiet. If survivors persist, the chains stay
+          # and the job fails (evidence is already uploaded).
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify || {
+            echo "qualify UID did not quiesce; leaving confinement in place"
+            exit 1
+          }
+          QUID="$(sudo -n python3 -c 'import pwd; print(pwd.getpwnam("qualify").pw_uid)' 2>/dev/null || echo qualify)"
+          sudo -n iptables -D OUTPUT -m owner --uid-owner "${QUID}" -j QUALIFY_EGRESS || true
+          sudo -n iptables -F QUALIFY_EGRESS || true
+          sudo -n iptables -X QUALIFY_EGRESS || true
+          sudo -n ip6tables -D OUTPUT -m owner --uid-owner "${QUID}" -j QUALIFY_EGRESS6 || true
+          sudo -n ip6tables -F QUALIFY_EGRESS6 || true
+          sudo -n ip6tables -X QUALIFY_EGRESS6 || true
+          echo "confinement removed"
+
+      - name: Remove confinement (macOS)
+        if: ${{ always() && matrix.goos == 'darwin' }}
+        run: |
+          set -euo pipefail
+          QDIR="${RUNNER_TEMP}/measure"
+          sudo -n python3 "${QDIR}/uid_sweep.py" qualify || echo "qualify UID sweep failed (diagnostic leg records it)"
+          # Flush only our anchor; never touch global pf state.
+          sudo -n pfctl -a qualify -F rules 2>/dev/null || echo "pf anchor flush failed or absent"
+          echo "macOS confinement cleanup attempted"
+
+  attest:
+    name: attest (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: measure
+    if: always()
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+    env:
+      QUALIFY_HARNESS: ${{ inputs.harness }}
+      QUALIFY_VERSION: ${{ inputs.version }}
+      QUALIFY_ADAPTER: ${{ inputs.adapter }}
+      QUALIFY_ENTRYPOINT: ${{ inputs.entrypoint }}
+      QUALIFY_GOOS: ${{ matrix.goos }}
+      QUALIFY_GOARCH: ${{ matrix.goarch }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import os, re, sys
+          VERSION_RE = r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}"
+          def valid(harness, version, adapter, entrypoint):
+              if harness != "claude-code":
+                  return False
+              if adapter != "generic-env-v1":
+                  return False
+              if entrypoint != "exec":
+                  return False
+              return len(version) <= 32 and re.fullmatch(VERSION_RE, version) is not None
+          cases = [
+              ("claude-code", "2.1.290", "generic-env-v1", "exec", True),
+              ("claude-code", "git+https://example.invalid/payload.git#\n2.1.290", "generic-env-v1", "exec", False),
+              ("claude-code", "2.1.290\n", "generic-env-v1", "exec", False),
+              ("claude-code", "latest", "generic-env-v1", "exec", False),
+              ("other", "2.1.290", "generic-env-v1", "exec", False),
+          ]
+          for harness, version, adapter, entrypoint, want in cases:
+              if valid(harness, version, adapter, entrypoint) != want:
+                  print("validator self-test failed")
+                  sys.exit(1)
+          if not valid(os.environ.get("QUALIFY_HARNESS", ""),
+                        os.environ.get("QUALIFY_VERSION", ""),
+                        os.environ.get("QUALIFY_ADAPTER", ""),
+                        os.environ.get("QUALIFY_ENTRYPOINT", "")):
+              print("dispatch inputs are not an exact pinned build request")
+              sys.exit(1)
+          print("inputs valid")
+          PYEOF
+
+      - name: Download the evidence bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf attest-tmp attest-bundle
+          mkdir -p attest-tmp attest-bundle
+          # Bound to this run AND this run attempt (R2); --repo is explicit
+          # because this fresh runner has no checkout to infer from.
+          ART="evidence-${QUALIFY_GOOS}-${QUALIFY_GOARCH}-attempt-${GITHUB_RUN_ATTEMPT}"
+          gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "${ART}" --dir attest-tmp
+          # Exact constructed path only: no fallback search (R2). The
+          # measure job uploads bundle/* with least common ancestor
+          # bundle/, so the artifact root holds exactly the documented
+          # names. Move the single evidence file to ONE fixed subject-path.
+          SRC="attest-tmp/${ART}/evidence.json"
+          if [ ! -f "${SRC}" ]; then
+            echo "bundle is missing evidence.json at exact path ${SRC}"
+            ls -laR attest-tmp || true
+            exit 1
+          fi
+          cp "${SRC}" attest-bundle/evidence.json
+          # Copy the bundled frozen logs needed for digest verification by
+          # exact names (no search).
+          for name in sink-calibration.jsonl sink-version.jsonl sink-stimulus.jsonl; do
+            src="attest-tmp/${ART}/${name}"
+            if [ -f "${src}" ]; then
+              cp "${src}" "attest-bundle/${name}"
+            fi
+          done
+          ls -la attest-bundle
+
+      - name: Verify the evidence
+        run: |
+          set -euo pipefail
+          # Reviewed workflow code only: the bundle is read as data and
+          # nothing uploaded is executed. Only pass-and-eligible evidence
+          # for this run's validated inputs and this run attempt may be
+          # attested. Every digest relied on is recomputed.
+          python3 - attest-bundle <<'PYEOF'
+          import hashlib, json, os, re, sys
+          bundle = sys.argv[1]
+          def fail(msg):
+              print("refusing to attest: " + msg)
+              sys.exit(1)
+          ev_path = os.path.join(bundle, "evidence.json")
+          if not os.path.isfile(ev_path):
+              fail("bundle is missing evidence.json at the fixed subject-path")
+          try:
+              with open(ev_path, encoding="utf-8") as handle:
+                  ev = json.load(handle)
+          except ValueError:
+              fail("evidence is not JSON")
+          if not isinstance(ev, dict):
+              fail("evidence is not an object")
+          env = os.environ
+          if ev.get("schema") != "relux-adapter-evidence-v1":
+              fail("evidence schema mismatch")
+          if ev.get("verdict") != "pass":
+              fail("evidence verdict is not pass")
+          if ev.get("eligible") is not True:
+              fail("evidence is not eligible")
+          for key in ("harness", "version", "adapter", "entrypoint"):
+              if ev.get(key) != env.get("QUALIFY_" + key.upper(), ""):
+                  fail("evidence " + key + " does not match the validated inputs")
+          if ev.get("os") != env.get("QUALIFY_GOOS", "") or ev.get("arch") != env.get("QUALIFY_GOARCH", ""):
+              fail("evidence platform does not match this leg")
+          if ev.get("repository") != env.get("GITHUB_REPOSITORY", ""):
+              fail("evidence repository mismatch")
+          if ev.get("run_id") != env.get("GITHUB_RUN_ID", ""):
+              fail("evidence run mismatch")
+          if ev.get("run_attempt") != env.get("GITHUB_RUN_ATTEMPT", ""):
+              fail("evidence run-attempt mismatch (stale bundle)")
+          if ev.get("workflow_sha") != env.get("GITHUB_SHA", ""):
+              fail("evidence commit mismatch")
+          # Per-leg status: every check the verdict relies on must be ok.
+          checks = ev.get("checks")
+          if not isinstance(checks, dict):
+              fail("evidence checks missing")
+          for name in ("inputs", "fetch", "artifact", "version", "stimulus", "observation", "freeze", "confinement"):
+              check = checks.get(name)
+              if not isinstance(check, dict) or check.get("ok") is not True:
+                  fail("evidence check %s is not ok" % (name,))
+          # Every digest: binary hash format plus each frozen phase log
+          # recomputed from the bundled bytes.
+          if re.fullmatch(r"[0-9a-f]{64}", ev.get("binary_sha256", "") or "") is None:
+              fail("evidence binary digest malformed")
+          frozen = ev.get("frozen_logs")
+          if not isinstance(frozen, dict):
+              fail("evidence frozen logs missing")
+          for phase in ("calibration", "version", "stimulus"):
+              entry = frozen.get(phase)
+              if not isinstance(entry, dict) or re.fullmatch(r"[0-9a-f]{64}", entry.get("sha256", "") or "") is None:
+                  fail("evidence frozen digest for %s malformed" % (phase,))
+              log_path = os.path.join(bundle, "sink-%s.jsonl" % (phase,))
+              if not os.path.isfile(log_path):
+                  fail("bundle is missing sink-%s.jsonl" % (phase,))
+              digest = hashlib.sha256()
+              with open(log_path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(65536), b""):
+                      digest.update(chunk)
+              if digest.hexdigest() != entry["sha256"]:
+                  fail("frozen log digest mismatch for %s" % (phase,))
+          if ev.get("sink_log_sha256", "") != frozen.get("stimulus", {}).get("sha256", ""):
+              fail("evidence stimulus log digest mismatch")
+          print("evidence verified for attestation")
+
+          PYEOF
+
+      - name: Attest evidence
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: attest-bundle/evidence.json

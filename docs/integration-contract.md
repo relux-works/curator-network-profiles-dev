@@ -204,6 +204,36 @@ fallback. Cache keys are exactly the binary SHA-256, never a version
 string. A changed adapter identity requires a new launch; existing
 runs retain their exact recorded identity.
 
+Central adapter-build qualification ships reviewed
+conformance evidence for exact builds instead of version labels. The
+`qualify-adapter` workflow dispatches one
+harness/version/adapter/entrypoint tuple per run (only `claude-code`
+for now) across three jobs on fresh runners: a `fetch` job obtains
+exactly that build without executing any vendor code and uploads the
+bytes as untrusted data; a permissionless `measure` job stages the
+bytes in a root-owned read-only path, runs the generic-env-v1 recipe
+as a dedicated workload UID against phase-isolated loopback sinks with
+UID-keyed egress confinement and calibrated counters, and writes an
+evidence JSON (failures and macOS diagnostics included); a separate
+minimal `attest` job verifies and attests only pass-and-eligible
+evidence at one fixed subject-path. A human reviews the evidence and
+attestation against the promotion checklist, then commits the record
+(binary SHA-256 plus evidence digest and run URL) to the shipped
+`relux-adapter-qualified-v1` list; the record takes effect with the
+next release. There is no operator qualification file; records enter
+through reviewed commits and releases only. Consumers merge the
+shipped entries into `Policy.Allowlist` with
+`adapterprobe.EmbeddedQualified()`; strict and sensitive-egress
+policies then qualify the exact digest on the recorded platform only
+(a record never qualifies another OS/arch), and nothing else changes
+in the consumer sequence above. This list is trusted host input like
+any allowlist entry: it does not plug the optimistic evidence-lookup
+seam, which stays reserved. What a record proves — an attributed
+CONNECT plus zero counted direct attempts under UID confinement for
+that stimulus — and what it does not (no authenticated turns, no
+fallback, hooks, tools, children or other platforms) — is defined in
+[harness verification](harness-verification.md#central-qualification-of-adapter-builds).
+
 ## 2. Per consumer: where, who, what
 
 ### 2.1 Launch plane: `skill-agents-management`

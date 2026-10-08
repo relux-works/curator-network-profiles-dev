@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- Add central adapter-build qualification:
+  the `qualify-adapter` workflow dispatches one
+  harness/version/adapter/entrypoint tuple (only `claude-code` for now)
+  to fresh ubuntu-latest and per-architecture macOS runners across
+  three jobs: `fetch` obtains exactly that build without executing any
+  vendor code and uploads the bytes as untrusted data; `measure` stages
+  them in a root-owned read-only path and runs the generic-env-v1
+  recipe as a dedicated workload UID against phase-isolated loopback
+  sinks under UID-keyed confinement with calibrated counters (measured
+  zero-counted verdict on Linux; diagnostic/ineligible on macOS when a
+  guarantee cannot be made). Every leg finalizes structured evidence
+  with explicit phase statuses, including setup failures, and a
+  diagnostics-only export; a separate minimal `attest` job verifies the
+  attempt-bound bundle and attests only pass-and-eligible evidence at
+  one fixed subject-path.
+- Add the shipped qualified-builds list
+  (`pkg/adapterprobe/qualified.json`,
+  `relux-adapter-qualified-v1`, currently empty) with strict parsing,
+  the `EmbeddedQualified()` allowlist helper (OS/arch confinement
+  before SHA-256 deduplication; a record never qualifies another
+  platform), and coverage for parsing, merging and strict/sensitive-egress
+  qualification. Records enter through reviewed evidence, commits and
+  releases only. See `docs/harness-verification.md`.
+
 ## v0.3.1 (2026-10-06)
 
 - Add `pkg/adapterprobe` policy evaluation over caller-supplied native
