@@ -109,6 +109,30 @@ Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, acc
 | R9 | Token refresh by the same build after R8 (forced by an expired access token), same setup | As R8 for the refresh path; the refresh host set is recorded separately; no direct fallback with a dead proxy. |
 | R10 | Name resolution of the same runs | Record whether the executable resolves names locally at all when a CONNECT proxy is set; per-UID packet rules are not DNS evidence (lookups leave as `mDNSResponder` on macOS, `systemd-resolved` under `nss-resolve` on Linux), so this row is read with a resolver-denying sandbox, not with packet counters. |
 
+### Planned rows for workplaces, the platform proxy and the verification runners
+
+Added 2026-10-13 for specification N15 items 10 and 11 and for N16, after the operator's decision on internet access. Every probe must fail. Where a row has a control, the control shows that the probe would succeed without the rule.
+
+These rows create accounts, change firewall rules or start runners. They therefore run only on hosted CI runners or on the verification runner machine, never on a developer's machine or a production host (user manager §12). The safety rules above still forbid running any of them here.
+
+| Row | Probe (must fail) | Control (must work) |
+| --- | --- | --- |
+| W1 | From a workplace account: TCP and UDP to an external address over IPv4 and IPv6, QUIC included | The same probe from an agent account reaches its own listener and nothing else |
+| W2 | From a workplace account: loopback TCP and UDP to every listener on the host, the proxy's included | — |
+| W3 | Name resolution from a workplace job: `getaddrinfo`, the platform's resolver tools, a query to port 53 | The resolver answers the same name for an account without the sandbox |
+| W4 | Unix-socket connect from a workplace principal to the broker, the proxy's control socket and a web-tool service | The service principal's own connection works |
+| W5 | Forwarding over the workplace SSH entry: local, remote, dynamic, stream-local and tunnel requests | The relay session itself works under the deny-all row |
+| W6 | A socket opened before the deny-all row and kept open | — |
+| P1 | Dial guard: names that resolve into each forbidden range, a mixed answer, IPv4-mapped, NAT64 and 6to4 forms, a second lookup that rebinds | The same name with a public address works |
+| P2 | Allow-entry matching: a suffix-extended host, a prefix-glued host, IP literals, a trailing dot, upper case, punycode | The exact allowed host works |
+| P3 | Refused ports: a profile listing a mail or resolver port fails validation; `CONNECT` to such a port refuses | Port 443 to an allowed host works |
+| P4 | Caps per identity: requests per minute, concurrent connections, bytes per day, tunnel lifetime; a second identity stays unaffected | A lifted cap in the control profile works |
+| P5 | Attribution: account A reaches account B's listener | Account A reaches its own listener |
+| P6 | Fail closed: the proxy stops while a logged-in Codex session runs (R2-chatgpt under enforcement); the kernel drops and counts the direct attempt | The same session with the proxy up |
+| V1 | Runner build and test step: any outbound packet, any name resolution | — |
+| V2 | Runner fetch step: an unmasked module, a method other than GET or HEAD on a mirror handler, `CONNECT` to a host outside the job's allow entries | An allowed module downloads |
+| V3 | Runner fetch step: an install script and a build hook of a dependency each try to write a marker | Outside the runner, the same package with scripts on writes both markers |
+
 ## Helper and evidence
 
 `scripts/verify-harness.sh` runs one command per invocation. It starts the

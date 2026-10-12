@@ -89,7 +89,7 @@ endpoint     = "http://127.0.0.1:18082"
 bypass_hosts = ["localhost", "127.0.0.1", "::1"]
 ```
 
-Kinds are `external-http-proxy` and `direct`. A named `kind = "direct"` profile has no `endpoint`, `bypass_hosts` or `probe_target`; these keys MUST be refused if present, even empty.
+Kinds are `external-http-proxy` and `direct`; a Swarma platform host binds neither and serves `platform-proxy` profiles instead (*proposed*, N15 items 2 and 5). A named `kind = "direct"` profile has no `endpoint`, `bypass_hosts` or `probe_target`; these keys MUST be refused if present, even empty.
 
 ```toml
 [networks.direct]
@@ -178,17 +178,72 @@ Adds `acquire / inspect / release`; the lease belongs to the owner of the actual
 
 ### N15 Platform hosts: a machine-owned binding and service accounts (Swarma v1)
 
-Applies on a host where the Swarma platform runs each agent under its own OS account and the user manager's v1 per-UID firewall makes network profiles **enforced**. Accepted by the operator on 2026-10-12 from the platform architecture review (findings F-27 and F-24 in `relux-works/swarma-architecture-review`, FINDINGS.md). It revises N3, N4 and vector S7 **for such hosts**; an operator machine without the platform keeps N3 and N4 as written. These were lane-owned draft decisions, not owner D-* decisions.
+Applies on a host where the Swarma platform runs each agent under its own OS account and the user manager's v1 per-UID firewall makes network profiles **enforced**. Accepted by the operator on 2026-10-12 from the platform architecture review (findings F-27 and F-24 in `relux-works/swarma-architecture-review`, FINDINGS.md). Revised on 2026-10-13 after the operator's decision on internet access:
+- inside the platform, an agent's account reaches no internet beyond what its own agent loop needs;
+- web access is a tool of the agent loop;
+- agents neither build nor test, so dependencies are fetched only on off-host verification runners (N16).
+
+N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without the platform keeps N3 and N4 as written. Items 1–9 were lane-owned draft decisions, not owner D-* decisions. Items 10–12, and the 2026-10-13 changes to items 2 and 5–9, apply the operator's decision.
 
 1. **Ownership.** The catalog and a **binding policy** live in a root-owned, agent-readable location written only by the platform installer or the operator, beside the user manager's configuration, never in an agent home. An agent account's own `~/.curator/network.toml` is not read for selection: under per-agent accounts that file is writable by the very orchestrator whose children it would bound, so an allowed set kept there is self-issued.
-2. **The binding.** It maps the admitted Curator profile identity, its name **and** lock digest (`lock_sha256`, LP-D11), never the name alone, to exactly one network profile reference and its `profile_digest`. `direct` is possible only where the binding names it. Grant `profiles` already narrow down a delegation chain, so egress narrows with them. One Curator profile maps to one egress; a separate network grant dimension is added only if a profile ever needs several. CIP-0011 §6 cited a `[bindings.profiles]` table in `~/.curator/network.toml`; no such table exists in this specification, and this binding replaces that route.
+2. **The binding.** It maps the admitted Curator profile identity, its name **and** lock digest (`lock_sha256`, LP-D11), never the name alone, to exactly one network profile reference and its `profile_digest`. On a platform host the binding never names a `direct` or an `external-http-proxy` profile, for any account class. `direct` is unbounded, and an operator's external proxy cannot publish the served-policy evidence of item 5. Both kinds stay for operator machines without the platform (N3, N4). Grant `profiles` already narrow down a delegation chain, so egress narrows with them. One Curator profile maps to one egress; a separate network grant dimension is added only if a profile ever needs several. CIP-0011 §6 cited a `[bindings.profiles]` table in `~/.curator/network.toml`; no such table exists in this specification, and this binding replaces that route.
 3. **Precedence on a platform host.** The binding selects; nothing else does. An explicit `--network`, an inherited reference and runtime, project or operator defaults are checked against it and refused with `network_profile_denied` when they differ. Vector S7 ("explicit direct overrides a profiled parent within the allowed set") does not apply on a platform host.
 4. **Pinned at admission.** The platform's dispatcher resolves the binding when it admits a launch and pins reference and digest in its request record. Retries and recovery apply the same pair; a binding or catalog change before the firewall is applied refuses instead of applying another profile. This is the platform form of `network_profile_drift` (N7).
-5. **What the listener serves.** On a platform host the egress proxy is a trusted service with one listener per profile, under the proxy's service account. Its profile kind (`platform-proxy`, *proposed*) carries the destination allowlist (`allow_hosts`, names, *proposed*), and the digest covers it. The proxy publishes per listener `{listener, service_generation, served_allowlist_digest}`. The firewall apply refuses unless the listener's served digest equals the digest bound for that profile, so the applied-state record certifies a served policy, not a label. The canonical relation between `profile_digest` and the served allowlist digest is defined in the contract appendix before activation; they are not assumed equal. A binding holds for the listener and its service generation for the listener's lifetime; a reload or a reused port never changes the egress of agents already bound.
-6. **Narrowing reaches running agents.** A narrowed binding or allowlist is applied to existing allocations by a journaled re-apply: the kernel side flushes the account's states (user manager §8), and the proxy drops or re-checks sessions opened under the old allowlist. Without it a standing agent keeps its old, possibly broader egress.
-7. **Platform service accounts (F-24).** The dispatcher and the session host get no profile: their per-UID row denies all egress. The credential broker gets its own profile and listener (`swarma-broker-vendor`, *proposed*) whose allowlist is the vendor's login and refresh endpoint set **as observed** by the verification rows R8 and R9 ([harness verification](../docs/harness-verification.md#planned-rows-for-the-platform-broker)), never copied from the broker's `credential_binding` endpoint list. Until those rows pass for the exact Codex build, the broker profile is not written. Observed for `codex-cli` 0.159.0 on 2026-10-12: device login, token exchange, refresh and logout use `auth.openai.com:443` only; the refresh must be triggered without an agent turn, since `codex exec` adds `chatgpt.com`, `ab.chatgpt.com` and `*.oaiusercontent.com`, and its model client falls back to direct egress when the proxy is down. The approved Codex executable receives the proxy variables explicitly (`codex-env-v1`: Codex children do not inherit them). The proxy's own account is **proxy-enforced**: its egress is wide by necessity and bounded by its allowlists.
-8. **Name resolution is not covered by per-UID rules.** On macOS a lookup leaves the host as the root `mDNSResponder`, on Linux as `systemd-resolved` under `nss-resolve`, so a per-UID packet rule is not DNS evidence. A client behind a CONNECT proxy needs no local resolution, since the proxy resolves; accounts that never need names get a sandbox that denies the resolver. DNS, Mach/XPC and resolver paths are qualification rows.
-9. **Timing.** All of this lands with enforcement (platform slice 2). Until then the platform records the selected profile as **declared**, and no cooperative check is read as containment.
+5. **What the listener serves.** On a platform host the egress proxy is a trusted service under its own service account, with **one listener per bound account generation**. A loopback TCP listener cannot tell which account connected, and per-identity caps and logs (item 11) need that attribution, so the account's firewall row admits only its own listener's port. Its profile kind (`platform-proxy`, *proposed*) carries the served policy of item 11: the allow entries, the caps and the dial-guard version. The digest covers all of it. The proxy publishes per listener `{listener, account_generation, profile_ref, service_generation, served_policy_digest}`. The firewall apply refuses unless the listener's served digest equals the digest bound for that profile, so the applied-state record certifies a served policy, not a label. The canonical relation between `profile_digest` and the served policy digest is defined in the contract appendix before activation; they are not assumed equal. A binding holds for the listener and its service generation for the listener's lifetime; a reload or a reused port never changes the egress of agents already bound.
+6. **Narrowing reaches running agents.** A narrowed binding or served policy is applied to existing allocations by a journaled re-apply: the kernel side flushes the account's states (user manager §8), and the proxy drops or re-checks sessions opened under the old policy. Without it a standing agent keeps its old, possibly broader egress.
+7. **Platform service accounts (F-24).** The dispatcher and the session host get no profile: their per-UID row denies all egress. The credential broker gets its own profile and listener (`swarma-broker-vendor`, *proposed*) whose allowlist is the vendor's login and refresh endpoint set **as observed** by the verification rows R8 and R9 ([harness verification](../docs/harness-verification.md#planned-rows-for-the-platform-broker)), never copied from the broker's `credential_binding` endpoint list. Until those rows pass for the exact Codex build, the broker profile is not written. Observed for `codex-cli` 0.159.0 on 2026-10-12: device login, token exchange, refresh and logout use `auth.openai.com:443` only; the refresh must be triggered without an agent turn, since `codex exec` adds `chatgpt.com`, `ab.chatgpt.com` and `*.oaiusercontent.com`, and its model client falls back to direct egress when the proxy is down. The approved Codex executable receives the proxy variables explicitly (`codex-env-v1`: Codex children do not inherit them). A platform web-tool service, where deployed, gets its own profile and listener (item 12). The proxy's own account is **proxy-enforced**: its egress is wide by necessity and bounded by its served policies. Its kernel row also denies the dial guard's ranges (item 11) as a backstop.
+8. **Name resolution is not covered by per-UID rules.** On macOS a lookup leaves the host as the root `mDNSResponder`, on Linux as `systemd-resolved` under `nss-resolve`, so a per-UID packet rule is not DNS evidence. A client behind a CONNECT proxy needs no local resolution, since the proxy resolves; accounts that never need names get a sandbox that denies the resolver. Agents behind their listener and workplaces (item 10) never need names. DNS, Mach/XPC and resolver paths are qualification rows.
+9. **Timing.** All of this lands with enforcement (platform slice 2). Until then the platform records the selected profile as **declared**, and no cooperative check is read as containment. A workplace or any other untrusted class is never activated before enforcement (platform contract §7.6), so it never runs under a declared or cooperative profile. Cooperative profiles belong to operator machines without the platform.
+10. **Workplaces: zero egress (operator, 2026-10-13).** A remote worker's model calls happen in its own agent loop on the donor's side. So a `workplace` account on our host has no binding, no listener and no proxy destination. Its row denies all egress, including loopback TCP and UDP over IPv4 and IPv6, and the binding policy refuses any profile for the class. Two channels lie outside per-UID rules and are closed separately:
+    - name resolution, which the launcher's job sandbox denies (item 8);
+    - Unix sockets: no service with egress admits a workplace principal, whether the broker, the proxy's control socket or a web-tool service.
+
+    The inbound SSH entry is not egress of the workplace. pf and nftables attribute an accepted connection to the listening `sshd`, and the entry permits no forwarding of any kind (CIP-0009).
+11. **The served policy.** The same rules serve the model-provider proxy and the runners' dependency egress (N16).
+    - **Allow entries** are `host:port` pairs, and no port is implied. Hosts are canonicalised before matching: lower case, punycode, no trailing dot. IP literals are refused. A wildcard matches whole labels only: `*.example.com` matches `a.example.com`, never `example.com.evil.test` or `badexample.com`.
+    - **Refused ports.** No profile can list a mail port (25, 110, 143, 465, 587, 993, 995, 2525) or a resolver port (53, 853). The validator refuses such a profile, and the proxy refuses such a dial.
+    - **Dial guard**, not configurable. The proxy resolves the name itself and refuses if **any** answer lies in a forbidden range:
+      - IPv4: unspecified, loopback, private (RFC 1918), shared address space `100.64.0.0/10` (which holds a tailnet), link-local `169.254.0.0/16` (which holds the cloud metadata address), benchmarking, multicast and reserved;
+      - IPv6: unspecified, loopback, unique-local `fc00::/7`, link-local and multicast.
+
+      IPv4-mapped, NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`) addresses are unwrapped before the check. The proxy dials the checked address and rechecks the connected peer, so a second lookup cannot rebind it.
+    - **Per-identity caps**: requests per minute, concurrent connections, bytes per day, tunnel lifetime and idle timeout. The lifetime cap is set per profile and outlasts the longest model stream of the qualified tuple. Every exceeded cap refuses with the same single status.
+    - **Behaviour.** Agent profiles admit `CONNECT` only. There is no TLS interception. A failure refuses, and nothing falls back to another route (N10).
+    - **Logs** are JSON lines: time, identity, account generation, `profile_ref`, served policy digest, host, port, resolved address, decision, refusal code, bytes each way and duration. They never hold bodies, headers, tokens, URL paths or queries (N11).
+12. **Trusted local agents and web access (operator, 2026-10-13).** A trusted local agent's profile admits only the model-provider endpoints of its qualified tuple. They come from verification rows, never from documentation. For `codex-cli` 0.159.0 with a ChatGPT login, the round-3 rows observed these hosts, all on port 443 ([harness verification](../docs/harness-verification.md#results-round-3-2026-10-12-codex-login-and-refresh-r8r10)):
+    - a turn: `chatgpt.com` and `ab.chatgpt.com`;
+    - the first turn in a fresh home: also regional `*.oaiusercontent.com` hosts;
+    - the refresh: `auth.openai.com`.
+
+    The single auth owner decides whether the refresh endpoint is listed (CIP-0011). When the broker owns the refresh, the agent's profile leaves it out, and an expired token fails closed in the agent. Agents neither build nor test, so no agent profile lists a package registry.
+
+    Web access is a tool of the agent loop, and provider-side search adds no entry here. A platform web-tool service, where deployed:
+    - holds its key in its own service account;
+    - serves only ports 80 and 443 under item 11;
+    - is reached by agents over a Unix socket with peer-UID admission and a grant, never over TCP.
+
+    The service sees plaintext queries, so its log is the audit point.
+
+### N16 Verification runners: dependency egress off the platform host (*proposed*, 2026-10-13)
+
+Applies to the ephemeral runners of the board's verification phase, on a machine other than the platform host. The operator decided on 2026-10-13 that agents neither build nor test: a controlled verification phase runs builds and tests on isolated ephemeral runners on another machine, without secrets. The board owns the runners, the candidate import and the verification phase; its specification for them is unpublished. This section states only their network side, for that specification to cite.
+
+1. **Two steps.** A fetch step resolves dependencies from the candidate's lock files with install scripts and build hooks off, and runs no candidate code. The build and test step then runs with no network at all: no interface but loopback, and no resolver. A dependency the fetch step did not bring fails the build; nothing is fetched during the test step.
+2. **One route.** The fetch step's only way out is a per-job socket to the egress service. The service serves the policy of N15 item 11 for that job: allow entries, refused ports, the dial guard, caps and logs. The job's identity is its own listener. The build and test step gets no socket.
+3. **Mirror handlers before tunnels.** Where an ecosystem has a method-restricted handler, the fetch step uses it instead of `CONNECT`. Such a handler serves GET and HEAD under a path grammar and checks the module path against the job's masks; the `modules` handler of remote-workplace v2.1 does this for Go. A `CONNECT` tunnel to a registry is opaque and carries an upload as easily as a download. Where a tunnel is the only option, the guarantee covers which hosts are reached, not what is sent. An unmasked module fetch is an outbound channel too, because the module proxy contacts whatever origin the requested path names.
+4. **No credentials of ours** reach the runner. A registry upload can therefore only use a credential the candidate itself carries; item 3 narrows that residue but does not remove it.
+5. **Results as data.** The fetch step's log (the JSON lines of N15 item 11) returns with the verification result, bound to the candidate's digest.
+6. **Candidate implementation.** The egress service of remote-workplace v2.1 (`rwp-egress`) already has this shape on Linux:
+   - calls without a network interface;
+   - a Unix socket per worker;
+   - the `modules` handler, the dial guard, caps and logs;
+   - fail-closed behaviour.
+
+   To serve as the platform host's model-provider proxy, it would also need:
+   - a native deployment under the proxy's service account;
+   - per-account loopback TCP listeners, because harnesses speak `HTTP_PROXY` over TCP;
+   - the served-policy status that the firewall apply checks;
+   - macOS packaging.
 
 ---
 
@@ -251,6 +306,19 @@ Closed by this document: flag name `--network-profile`; file location pattern (`
 Remaining for the implementing session (record why when choosing): the first managed backend (sing-box is the candidate).
 
 ## 7. Change log
+
+**2026-10-13 (operator decision on internet access, platform wave 5).**
+- N15 revised:
+  - item 2: on a platform host the binding never names `direct` or `external-http-proxy`;
+  - item 5: one proxy listener per bound account generation, with a served policy digest over allow entries, caps and the guard version;
+  - item 7: the web-tool service and a kernel backstop for the proxy's account;
+  - item 9: an untrusted class never runs under a declared or cooperative profile.
+- New N15 items:
+  - 10, zero egress for workplaces;
+  - 11, the served policy: `host:port` allow entries, refused mail and resolver ports, the dial guard, per-identity caps, `CONNECT` only, logs;
+  - 12, trusted local agents limited to their observed model-provider endpoints, and web access as a tool of the agent loop.
+- New N16: the network side of the off-host verification runners.
+- Harness verification: planned rows W1–W6, P1–P6 and V1–V3.
 
 **2026-10-12 (platform architecture review, accepted by the operator).** Added N15 for Swarma platform hosts: a root-owned catalog and binding policy keyed by the Curator profile name and lock digest, pinned at admission, a served-allowlist digest per proxy listener, a journaled re-apply, profiles for the platform's service accounts (the broker's own vendor profile after verification rows R8 and R9), and the DNS clause (findings F-27 and F-24). N3 and N4 point to N15; vector S7 is scoped to hosts without the platform. CIP-0011 §6's `[bindings.profiles]` route is replaced.
 

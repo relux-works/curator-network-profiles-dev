@@ -1420,7 +1420,7 @@ shows the inherited origin in a manifest-safe Record.
 
 **S7** — explicit direct overrides a profiled parent within the allowed set.
 
-Scope (2026-10-12): S7 holds on hosts without the Swarma platform. On a platform host the machine-owned binding of specification N15 selects, an explicit `direct` that differs from it refuses with `network_profile_denied`, and vectors for that rule are still to be written with the implementation.
+Scope (2026-10-12, revised 2026-10-13): S7 holds on hosts without the Swarma platform. On a platform host the machine-owned binding of specification N15 selects and never names `direct` (N15 item 2), so an explicit `direct` refuses with `network_profile_denied`; vectors for that rule are still to be written with the implementation.
 
 ```json vector=S7
 {
