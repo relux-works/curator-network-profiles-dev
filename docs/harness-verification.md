@@ -101,7 +101,7 @@ hostile values. Keep the proxy pointed at the sink for every harness launch.
 
 ### Planned rows for the platform broker
 
-Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, accepted by the operator). The Swarma credential broker runs the approved Codex executable under its own account for device login and token refresh. Its network profile may list only the endpoints these rows observe; the broker's `credential_binding` endpoint list is not evidence of the authentication endpoint set. Both rows need a real login, so they are **not runnable under the safety rules above**: each is an operator decision (which test account, which machine; the platform's isolation lab uses disposable cloud machines, never our work machines), and none is run on faith.
+Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, accepted by the operator). The Swarma credential broker runs the approved Codex executable under its own account for device login and token refresh. Its network profile may list only the endpoints these rows observe; the broker's `credential_binding` endpoint list is not evidence of the authentication endpoint set. Results: [round 3, 2026-10-12](#results-round-3-2026-10-12-codex-login-and-refresh-r8r10). Both rows need a real login, so they are **not runnable under the safety rules above**: each is an operator decision (which test account, which machine), and none is run on faith. On 2026-10-12 the operator chose the Mac mini itself, so the vendor sees the usual address.
 
 | Row | Operation | Pass criterion |
 | --- | --- | --- |
@@ -312,3 +312,38 @@ command with that patch. R4b demonstrates two injected values on 1.4.1, and hook
 wrapping remains a required mitigation rather than an observed pass. D8 = (A)
 retains these coverage limits and the open shell/tool scope; unverified child
 scopes remain `network_scope_unsupported`.
+
+## Results, round 3, 2026-10-12: Codex login and refresh (R8–R10)
+
+Run on the Mac mini itself at the operator's request, so the vendor sees the usual address: «если на этой машине можем протестировать что бы был тот же айпи - то давай прямо тут делаем тест». The operator completed the device code himself. A real login and a forwarding proxy are exceptions to the safety rules above, authorised for these rows only.
+
+**Setup.**
+- `codex-cli` 0.159.0, the installed standalone build (`x86_64-apple-darwin`).
+- The method's sandbox profile: SIGKILL on any non-loopback outbound connection and on the `mDNSResponder` socket; Keychain, `securityd` and the operator HOME denied.
+- A new temporary HOME and `CODEX_HOME` per attempt, with `cli_auth_credentials_store = "file"`, and an allowlisted environment.
+- A loopback logging CONNECT proxy on the same host. It records only the target and byte counts, never payloads, and was stopped after every attempt.
+- At the end the test session was logged out and every temporary home deleted.
+
+**Calibration.**
+- The profile activates (`/usr/bin/true`, rc 0).
+- `nc` to the proxy port: SIGKILL 137 under the calibration rule, rc 0 under the original profile, rc 1 to a dead port.
+- The DNS detector works: `getaddrinfo` of a `.invalid` name under the profile dies with 137.
+
+**TLS inside the method sandbox.** With Keychain and `securityd` denied, Codex cannot validate certificates: the first login attempt closed the tunnel right after the server hello. Codex accepts a CA bundle through `SSL_CERT_FILE` (it logs `codex_http_client::custom_ca: loaded certificates from custom CA bundle`), so the rows below set `SSL_CERT_FILE=/etc/ssl/cert.pem`. The host set does not depend on the CA source, and the direct-fallback finding below reproduces without it.
+
+| Row | Operation | Observed | Verdict |
+| --- | --- | --- | --- |
+| R8-dead | `login --device-auth`, proxy at `127.0.0.1:9` | rc 1, `error sending request for url (https://auth.openai.com/api/accounts/deviceauth/usercode)`; no SIGKILL; no non-loopback socket | PASS, no direct fallback |
+| R8 | `login --device-auth`, live proxy, code entered by the operator | rc 0, `Successfully logged in`; `auth.json` mode 0600 in the temporary `CODEX_HOME`, `auth_mode` chatgpt; 5 tunnels, all `CONNECT auth.openai.com:443` (user code, polling, token exchange); 0 of 721 socket samples non-loopback; no SIGKILL | PASS |
+| R9 trigger, `login status` | status only | no refresh, no network | info |
+| R9 trigger, old `last_refresh` | `last_refresh` set to 2026-08-01 | `codex exec` did not refresh: this build refreshes on access-token expiry, not on the age of `last_refresh` | info |
+| R9-dead | access-token `exp` moved into the past locally; `codex exec`; proxy at `127.0.0.1:9`; resolver allowed, direct IP denied without a kill | the refresh client made 56 attempts at `https://auth.openai.com/oauth/token`, every one through the proxy, all failed; no direct attempt from the refresh client; the token stayed unchanged | PASS for the refresh path, no direct fallback |
+| R9 | same, live proxy, strict profile | rc 0, the answer `ok`; `last_refresh` updated, so the refresh succeeded; tunnels `auth.openai.com` ×1, `chatgpt.com` ×12, `ab.chatgpt.com` ×1; no SIGKILL | PASS |
+| logout | `codex logout`, live proxy, strict profile | rc 0, `auth.json` removed; one tunnel to `auth.openai.com`, presumably the token revocation | info |
+| R10 | every row with a live proxy | no SIGKILL under the strict profile: with the proxy reachable Codex resolves no names itself; the proxy resolves | PASS for login, refresh, logout and an agent turn |
+| R2-chatgpt | `codex exec` logged in with ChatGPT, proxy at `127.0.0.1:9` | SIGKILL 137 within 0.5 s under the strict profile, also without `SSL_CERT_FILE`. With only the DNS kill: 137. With the resolver allowed and only the direct-IP kill: 137, so after resolving it connects directly. The debug log shows, inside `model_client.stream_responses_websocket` and `model_client.stream_responses_api`, each attempt as `proxy(http://127.0.0.1:9/) intercepts 'https://chatgpt.com/'` → `connecting to 127.0.0.1:9` → refused → a new connection to `https://chatgpt.com/` without the proxy → `connecting to` four Cloudflare addresses (two IPv4, two IPv6) on port 443 | **FAIL: direct fallback** |
+
+**What follows.**
+- **Broker profile (specification N15 item 7).** For `codex-cli` 0.159.0 the device login, the token exchange, the refresh and the logout use `auth.openai.com:443` only. That is the broker profile's observed allowlist. The broker must trigger a refresh through a narrow entry point, never through an agent turn: `codex exec` adds `chatgpt.com`, `ab.chatgpt.com` and `*.oaiusercontent.com`, and brings the model client's direct fallback with it. `login status` does not refresh; which narrow command or app-server method does is still open.
+- **Cooperative routing is not containment for logged-in Codex.** With the proxy unreachable, the model client of a Codex session logged in with ChatGPT leaves through a direct connection. That breaks the "no hidden direct fallback" rule (N10, §3) for this tuple. Round 2 saw no fallback with no login, where the target was `api.openai.com`; the ChatGPT model path differs. Only the per-UID firewall (user manager v1) contains it. `codex-env-v1` cannot fix it with environment variables, so `--network` keeps refusing Codex, and an enforced profile is required wherever Codex runs logged in.
+- **Refresh hammering.** With a dead proxy the refresh client retried 56 times within one run. The broker's backoff (broker §9.4) must bound this.
