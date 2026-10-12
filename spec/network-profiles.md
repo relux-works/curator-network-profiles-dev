@@ -180,7 +180,7 @@ Adds `acquire / inspect / release`; the lease belongs to the owner of the actual
 
 Applies on a host where the Swarma platform runs each agent under its own OS account and the user manager's v1 per-UID firewall makes network profiles **enforced**. Accepted by the operator on 2026-10-12 from the platform architecture review (findings F-27 and F-24 in `relux-works/swarma-architecture-review`, FINDINGS.md). Revised on 2026-10-13 after the operator's decision on internet access:
 - inside the platform, an agent's account reaches no internet beyond what its own agent loop needs;
-- web access is a tool of the agent loop;
+- web access is off by default: a task carries the resources it needs, and search is an opt-in for trusted-circle identities only (item 12);
 - agents neither build nor test, so dependencies are fetched only on off-host verification runners (N16).
 
 N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without the platform keeps N3 and N4 as written. Items 1–9 were lane-owned draft decisions, not owner D-* decisions. Items 10–12, and the 2026-10-13 changes to items 2 and 5–9, apply the operator's decision.
@@ -217,12 +217,21 @@ N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without
 
     The single auth owner decides whether the refresh endpoint is listed (CIP-0011). When the broker owns the refresh, the agent's profile leaves it out, and an expired token fails closed in the agent. Agents neither build nor test, so no agent profile lists a package registry.
 
-    Web access is a tool of the agent loop, and provider-side search adds no entry here. A platform web-tool service, where deployed:
-    - holds its key in its own service account;
-    - serves only ports 80 and 443 under item 11;
-    - is reached by agents over a Unix socket with peer-UID admission and a grant, never over TCP.
+    **Web access is off by default** for every agent (operator, later on 2026-10-13), and the design works without it:
+    - a task carries the resources it needs, such as fresh documentation, read-only and by digest;
+    - the trusted side fetches more on request;
+    - the donor's loop reaches only its provider's endpoints and our host, and our side has no internet;
+    - a harness's client-side fetch tool, one that downloads a URL itself, reaches nothing, because the agent's profile lists only model-provider endpoints.
 
-    The service sees plaintext queries, so its log is the audit point.
+    **Search is an opt-in** for trusted-circle identities only. The operator grants it per identity, and never to the untrusted class. It takes one of three forms:
+    - **Provider-side search.** It leaves through the model endpoint, so no network rule sees it. The launch plan keeps it off unless the identity holds the opt-in.
+    - **A donor-side MCP server** holding the donor's own key (platform contract §7.2).
+    - **A platform web-tool service**, where deployed. It:
+      - holds its key in its own service account;
+      - serves only ports 80 and 443 under item 11;
+      - is reached by an opted-in agent over a Unix socket with peer-UID admission and a grant, never over TCP.
+
+      The service sees plaintext queries, so its log is the audit point.
 
 ### N16 Verification runners: dependency egress off the platform host (*proposed*, 2026-10-13)
 
@@ -316,7 +325,7 @@ Remaining for the implementing session (record why when choosing): the first man
 - New N15 items:
   - 10, zero egress for workplaces;
   - 11, the served policy: `host:port` allow entries, refused mail and resolver ports, the dial guard, per-identity caps, `CONNECT` only, logs;
-  - 12, trusted local agents limited to their observed model-provider endpoints, and web access as a tool of the agent loop.
+  - 12, trusted local agents limited to their observed model-provider endpoints; web access off by default, with search as a per-identity opt-in for the trusted circle only (the operator's later rule the same night).
 - New N16: the network side of the off-host verification runners.
 - Harness verification: planned rows W1–W6, P1–P6 and V1–V3.
 
