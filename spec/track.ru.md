@@ -19,7 +19,7 @@
 | Шаг | Что даёт | Готово, когда | Отслеживание |
 | --- | --- | --- | --- |
 | N-A | библиотека, файл `~/.curator/network.toml`, провайдер `curator-network` с `curator network exec <name> -- <cmd>` и `check --probe`, приложение с контрактом (дайджест, `EnvPatch`, равенство) | два ручных запуска используют два выхода в сеть | включено (PR #12, 2026-10-01) |
-| N-B | `curator run --network` | лаунчер применяет патч через эту библиотеку | [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
+| N-B | `curator run --network` | лаунчер применяет патч через эту библиотеку | приземлён в main curator-agent-launcher: #31 (прямой режим, 05.10.2026), #35 (политика варианта C), #34 (закрепление v0.3.1); не выпущен, идёт после тега лаунчера v0.2.0; [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
 | N-C1a | явный профиль на путях запуска субагентов task-board, манифесты запусков; зависит только от D4 + v0.2.0 | дочерний агент использует профиль, включая повтор и возобновление | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4; D4 TASK-261002-143e84 |
 | N-C1b | явный профиль на путях процессов хостов tb-sessiond; после M3 / LP Phase 0 | сессия доски использует профиль, включая возобновление и повторное использование хоста | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4 |
 | N-C2 | значения по умолчанию из слоя оператора, привязок сред выполнения и проекта | запуски получают свой выход в сеть без флага | [#9](https://github.com/relux-works/curator-network-profiles/issues/9) |

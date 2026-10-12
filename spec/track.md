@@ -17,7 +17,7 @@ Several agents on one machine must reach the network through different applicati
 | Step | Delivers | Done when | Tracking |
 | --- | --- | --- | --- |
 | N-A | library, the file `~/.curator/network.toml`, the provider `curator-network` with `curator network exec <name> -- <cmd>` and `check --probe`, contract appendix (digest, `EnvPatch`, equality) | two manual launches use two egresses | landed (PR #12, 2026-10-01) |
-| N-B | `curator run --network` | the launcher applies the patch through this library | [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
+| N-B | `curator run --network` | the launcher applies the patch through this library | landed in curator-agent-launcher main: #31 (direct mode, 2026-10-05), #35 (option-C adapter policy), #34 (pins v0.3.1); unreleased, after launcher tag v0.2.0; [#7](https://github.com/relux-works/curator-network-profiles/issues/7) |
 | N-C1a | explicit profile on task-board subagent spawn paths, run manifests; depends on D4 + v0.2.0 only | a child uses the profile, including retry and resume | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4; D4 TASK-261002-143e84 |
 | N-C1b | explicit profile on tb-sessiond host process paths; after M3 / LP Phase 0 | a board session uses the profile, including resume and host reuse | [#8](https://github.com/relux-works/curator-network-profiles/issues/8), N-C1 TASK-261002-re5ew4 |
 | N-C2 | defaults from the operator layer, runtime bindings and the project | spawns get their egress without a flag | [#9](https://github.com/relux-works/curator-network-profiles/issues/9) |
