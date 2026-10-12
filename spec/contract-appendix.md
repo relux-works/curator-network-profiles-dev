@@ -1279,7 +1279,7 @@ Missing or denied profiles are decided by resolve before this table.
 
 ### 3.7 Selection and inheritance (spec N3, N4, N8)
 
-Host locks / allowed set constrain every selected reference. The reference
+On a Swarma platform host the machine-owned binding of specification N15 selects, and every other reference is only checked against it. Elsewhere, host locks / allowed set constrain every selected reference. The reference
 precedence is explicit → inherited → runtime-default → project-default →
 operator-default. Empty or whitespace-only references do not select; all
 selected references are trimmed before lookup. No selection is unmanaged.
@@ -1419,6 +1419,8 @@ shows the inherited origin in a manifest-safe Record.
 ```
 
 **S7** — explicit direct overrides a profiled parent within the allowed set.
+
+Scope (2026-10-12): S7 holds on hosts without the Swarma platform. On a platform host the machine-owned binding of specification N15 selects, an explicit `direct` that differs from it refuses with `network_profile_denied`, and vectors for that rule are still to be written with the implementation.
 
 ```json vector=S7
 {

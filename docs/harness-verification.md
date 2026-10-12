@@ -99,6 +99,16 @@ hostile values. Keep the proxy pointed at the sink for every harness launch.
 | R5 | lsof samples of harness and descendants, about every 0.5 s | No observed non-loopback sockets; record sampling gaps/errors. Combine with calibrated sandbox and signal evidence. |
 | R7 | Hooks and tool children where reachable without login | Separate env dump and transport evidence for each child type; MCP results do not cover them. |
 
+### Planned rows for the platform broker
+
+Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, accepted by the operator). The Swarma credential broker runs the approved Codex executable under its own account for device login and token refresh. Its network profile may list only the endpoints these rows observe; the broker's `credential_binding` endpoint list is not evidence of the authentication endpoint set. Both rows need a real login, so they are **not runnable under the safety rules above**: each is an operator decision (which test account, which machine; the platform's isolation lab uses disposable cloud machines, never our work machines), and none is run on faith.
+
+| Row | Operation | Pass criterion |
+| --- | --- | --- |
+| R8 | `codex login --device-auth` for the exact build, proxy variables set explicitly on the executable, live sink | Every request of the ceremony appears at the sink as `CONNECT <host>:443`; the full host set is recorded; with the proxy at `127.0.0.1:9` the ceremony fails with connection refusal and no observed direct socket (no fallback). The browser half runs under the person's account and is out of scope. |
+| R9 | Token refresh by the same build after R8 (forced by an expired access token), same setup | As R8 for the refresh path; the refresh host set is recorded separately; no direct fallback with a dead proxy. |
+| R10 | Name resolution of the same runs | Record whether the executable resolves names locally at all when a CONNECT proxy is set; per-UID packet rules are not DNS evidence (lookups leave as `mDNSResponder` on macOS, `systemd-resolved` under `nss-resolve` on Linux), so this row is read with a resolver-denying sandbox, not with packet counters. |
+
 ## Helper and evidence
 
 `scripts/verify-harness.sh` runs one command per invocation. It starts the
