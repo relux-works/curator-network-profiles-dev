@@ -111,7 +111,7 @@ Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, acc
 
 ### Planned rows for workplaces, the platform proxy and the verification runners
 
-Added 2026-10-13 for specification N15 items 10 and 11 and for N16, after the operator's decision on internet access. Row P1 was widened and row P7 added the same day for finding F-34 of review cycle 3. Every probe must fail. Where a row has a control, the control shows that the probe would succeed without the rule.
+Added 2026-10-13 for specification N15 items 10 and 11 and for N16, after the operator's decision on internet access. Row P1 was widened and rows P7 and P8 were added the same day for findings F-34 and F-68 of review cycle 3. Every probe must fail. Where a row has a control, the control shows that the probe would succeed without the rule.
 
 These rows create accounts, change firewall rules or start runners. They therefore run only on hosted CI runners or on the verification runner machine, never on a developer's machine or a production host (user manager §12). The safety rules above still forbid running any of them here.
 
@@ -130,6 +130,7 @@ These rows create accounts, change firewall rules or start runners. They therefo
 | P5 | Attribution: account A reaches account B's listener | Account A reaches its own listener |
 | P6 | Fail closed: the proxy stops while a logged-in Codex session runs (R2-chatgpt under enforcement); the kernel drops and counts the direct attempt | The same session with the proxy up |
 | P7 | Kernel backstop: from the proxy's own account, a direct connection to an address in each range of `dial-guard/1` that the host's packet filter can express, the NAT64 and 6to4 forms included; the record lists every range it cannot express | The proxy's account reaches a public address |
+| P8 | Budget continuity: an identity uses most of its daily volume, then, one at a time, the proxy restarts, crashes at an accounting boundary, rebinds the listener under the same policy, re-applies, and sees the clock stepped forward and back by an untrusted source; each time the identity gets no more than its remainder, or a refusal while the remainder is unknown | A new account generation or a new job starts with a full budget |
 | V1 | Runner build and test step: any outbound packet, any name resolution | — |
 | V2 | Runner fetch step: an unmasked module, a method other than GET or HEAD on a mirror handler, `CONNECT` to a host outside the job's allow entries | An allowed module downloads |
 | V3 | Runner fetch step: an install script and a build hook of a dependency each try to write a marker | Outside the runner, the same package with scripts on writes both markers |

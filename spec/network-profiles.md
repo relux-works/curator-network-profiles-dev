@@ -183,7 +183,7 @@ Applies on a host where the Swarma platform runs each agent under its own OS acc
 - web access is off by default: a task carries the resources it needs, and search is an opt-in for trusted-circle identities only (item 12);
 - agents neither build nor test, so dependencies are fetched only on off-host verification runners (N16).
 
-N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without the platform keeps N3 and N4 as written. Items 1–9 were lane-owned draft decisions, not owner D-* decisions. Items 10–12, and the 2026-10-13 changes to items 2 and 5–9, apply the operator's decision. The dial-guard enumeration of item 11 applies finding F-34 of review cycle 3, which the operator accepted on 2026-10-13.
+N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without the platform keeps N3 and N4 as written. Items 1–9 were lane-owned draft decisions, not owner D-* decisions. Items 10–12, and the 2026-10-13 changes to items 2 and 5–9, apply the operator's decision. In item 11, the dial-guard enumeration (F-34) and budget continuity (F-68) apply findings of review cycle 3, which the operator accepted on 2026-10-13.
 
 1. **Ownership.** The catalog and a **binding policy** live in a root-owned, agent-readable location written only by the platform installer or the operator, beside the user manager's configuration, never in an agent home. An agent account's own `~/.curator/network.toml` is not read for selection: under per-agent accounts that file is writable by the very orchestrator whose children it would bound, so an allowed set kept there is self-issued.
 2. **The binding.** It maps the admitted Curator profile identity, its name **and** lock digest (`lock_sha256`, LP-D11), never the name alone, to exactly one network profile reference and its `profile_digest`. On a platform host the binding never names a `direct` or an `external-http-proxy` profile, for any account class. `direct` is unbounded, and an operator's external proxy cannot publish the served-policy evidence of item 5. Both kinds stay for operator machines without the platform (N3, N4). Grant `profiles` already narrow down a delegation chain, so egress narrows with them. One Curator profile maps to one egress; a separate network grant dimension is added only if a profile ever needs several. CIP-0011 §6 cited a `[bindings.profiles]` table in `~/.curator/network.toml`; no such table exists in this specification, and this binding replaces that route.
@@ -211,6 +211,11 @@ N15 revises N3, N4 and vector S7 **for such hosts**; an operator machine without
 
       The enumeration is that of remote-workplace v2.1 (protocol §7), copied exactly. N15 and N16 both use it, and the served policy names its version (item 5). Any change, wider or narrower, is a new version, and no prose summary stands in for the list.
     - **Per-identity caps**: requests per minute, concurrent connections, bytes per day, tunnel lifetime and idle timeout. The lifetime cap is set per profile and outlasts the longest model stream of the qualified tuple. Every exceeded cap refuses with the same single status.
+    - **Budget continuity.** The daily volume belongs to the identity, not to a listener or a service process. Here the identity is the bound account generation; under N16 it is the job. The day is the UTC calendar day, not a rolling 24 hours.
+      - A restart, a crash, a reload, a re-apply or a replacement listener for the same identity keeps what that identity has already used. Before it admits the identity's traffic again, the proxy restores the amount used or a budget it reserved in advance. While the remainder is unknown, it refuses.
+      - Only a new account generation or a new job starts a new budget. A new listener or service generation serving the same identity does not.
+      - The day rolls over under the platform's time rule (F-21, R-TIME): a clock step from an untrusted source does not start a new day.
+      - The served policy states how much a crash can lose or overshoot, for example one reserved batch.
     - **Behaviour.** Agent profiles admit `CONNECT` only. There is no TLS interception. A failure refuses, and nothing falls back to another route (N10).
     - **Logs** are JSON lines: time, identity, account generation, `profile_ref`, served policy digest, host, port, resolved address, decision, refusal code, bytes each way and duration. They never hold bodies, headers, tokens, URL paths or queries (N11).
 12. **Trusted local agents and web access (operator, 2026-10-13).** A trusted local agent's profile admits only the model-provider endpoints of its qualified tuple. They come from verification rows, never from documentation. For `codex-cli` 0.159.0 with a ChatGPT login, the round-3 rows observed these hosts, all on port 443 ([harness verification](../docs/harness-verification.md#results-round-3-2026-10-12-codex-login-and-refresh-r8r10)):
@@ -250,6 +255,8 @@ Applies to the ephemeral runners of the board's verification phase, on a machine
    - a Unix socket per worker;
    - the `modules` handler, the dial guard, caps and logs;
    - fail-closed behaviour.
+
+   For either use, its counters must outlive the service process (N15 item 11, budget continuity). In v2.1 they live only as long as the process, so a restart would grant a fresh daily allowance.
 
    To serve as the platform host's model-provider proxy, it would also need:
    - a native deployment under the proxy's service account;
@@ -322,7 +329,8 @@ Remaining for the implementing session (record why when choosing): the first man
 **2026-10-13 (platform review cycle 3, accepted by the operator).**
 - N15 item 11, finding F-34: the dial guard becomes `dial-guard/1`, the exact enumeration of remote-workplace v2.1. It restores the whole-prefix refusals of `::/96`, `64:ff9b:1::/48` and `2001::/32`, and the range `192.0.0.0/24` that the prose list had lost. N16 uses the same version.
 - N15 item 7: the proxy account's kernel backstop covers the same ranges; anything the packet filter cannot express is recorded.
-- Harness verification: row P1 covers every range and whole prefix; new row P7 tests the kernel backstop.
+- N15 item 11, finding F-68: the daily volume belongs to the identity (the account generation, or the N16 job) and survives restarts, reloads, re-applies and replacement listeners. An unknown remainder refuses. The day is the UTC calendar day and rolls over under the time rule (F-21). N16 item 6 adds counters that outlive the process to what remote-workplace v2.1 lacks.
+- Harness verification: row P1 covers every range and whole prefix; new row P7 tests the kernel backstop; new row P8 tests budget continuity.
 
 **2026-10-13 (operator decision on internet access, platform wave 5).**
 - N15 revised:
