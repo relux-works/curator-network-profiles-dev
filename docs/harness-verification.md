@@ -111,7 +111,7 @@ Added 2026-10-12 for specification N15 item 7 (platform review finding F-24, acc
 
 ### Planned rows for workplaces, the platform proxy and the verification runners
 
-Added 2026-10-13 for specification N15 items 10 and 11 and for N16, after the operator's decision on internet access. Every probe must fail. Where a row has a control, the control shows that the probe would succeed without the rule.
+Added 2026-10-13 for specification N15 items 10 and 11 and for N16, after the operator's decision on internet access. Row P1 was widened and row P7 added the same day for finding F-34 of review cycle 3. Every probe must fail. Where a row has a control, the control shows that the probe would succeed without the rule.
 
 These rows create accounts, change firewall rules or start runners. They therefore run only on hosted CI runners or on the verification runner machine, never on a developer's machine or a production host (user manager §12). The safety rules above still forbid running any of them here.
 
@@ -123,12 +123,13 @@ These rows create accounts, change firewall rules or start runners. They therefo
 | W4 | Unix-socket connect from a workplace principal to the broker, the proxy's control socket and a web-tool service | The service principal's own connection works |
 | W5 | Forwarding over the workplace SSH entry: local, remote, dynamic, stream-local and tunnel requests | The relay session itself works under the deny-all row |
 | W6 | A socket opened before the deny-all row and kept open | — |
-| P1 | Dial guard: names that resolve into each forbidden range, a mixed answer, IPv4-mapped, NAT64 and 6to4 forms, a second lookup that rebinds | The same name with a public address works |
+| P1 | Dial guard `dial-guard/1`, through an allowlisted name each time: an answer in each listed range; an answer in each whole prefix (`::/96`, `64:ff9b:1::/48`, `2001::/32`); a forbidden IPv4 address inside the IPv4-mapped, NAT64 and 6to4 forms; one allowed and one forbidden answer together; a second lookup that rebinds | The same name with only public answers works, including the NAT64 and 6to4 forms of a public IPv4 address |
 | P2 | Allow-entry matching: a suffix-extended host, a prefix-glued host, IP literals, a trailing dot, upper case, punycode | The exact allowed host works |
 | P3 | Refused ports: a profile listing a mail or resolver port fails validation; `CONNECT` to such a port refuses | Port 443 to an allowed host works |
 | P4 | Caps per identity: requests per minute, concurrent connections, bytes per day, tunnel lifetime; a second identity stays unaffected | A lifted cap in the control profile works |
 | P5 | Attribution: account A reaches account B's listener | Account A reaches its own listener |
 | P6 | Fail closed: the proxy stops while a logged-in Codex session runs (R2-chatgpt under enforcement); the kernel drops and counts the direct attempt | The same session with the proxy up |
+| P7 | Kernel backstop: from the proxy's own account, a direct connection to an address in each range of `dial-guard/1` that the host's packet filter can express, the NAT64 and 6to4 forms included; the record lists every range it cannot express | The proxy's account reaches a public address |
 | V1 | Runner build and test step: any outbound packet, any name resolution | — |
 | V2 | Runner fetch step: an unmasked module, a method other than GET or HEAD on a mirror handler, `CONNECT` to a host outside the job's allow entries | An allowed module downloads |
 | V3 | Runner fetch step: an install script and a build hook of a dependency each try to write a marker | Outside the runner, the same package with scripts on writes both markers |
